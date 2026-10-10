@@ -1,19 +1,11 @@
-import { observeShutdown, type ShutdownControl } from '../../host/lifecycle';
-import { ensureOnboarded, announceEventsWhenLive } from '../../bot/onboarding';
-import { startBridge } from '../../bot/bridge';
-import { runSupervisor } from '../../bot/supervisor';
-import { acquireSingleInstanceLock, BridgeAlreadyRunningError } from '../../core/single-instance';
-import { clearServicePid, recordServicePid } from '../../service/win-startup';
-import { activeBots, ensureRegistry } from '../../config/bots';
-import { log } from '../../core/logger';
-import { AdminWriteError } from '../../admin/ops';
-import { createAdminIpcResponder } from '../../admin/ipc';
-import { createAdminService } from '../../admin/service';
-import { installBackendDep, uninstallBackendDep } from '../../agent';
-import { spawnDaemonControl } from './daemon-control';
-import { mountWebConsole, type MountedWebConsole } from '../../web/mount';
+import { homedir } from 'node:os';
+import { assertBridgeNotImported } from '../../bot/owner-notice';
+import type { ShutdownControl } from '../../host/lifecycle';
+import type { MountedWebConsole } from '../../web/mount';
 
 export async function runRun(botName?: string, options: { control?: ShutdownControl; managed?: boolean } = {}): Promise<void> {
+  assertBridgeNotImported(homedir());
+  const { observeShutdown } = await import('../../host/lifecycle');
   const control = options.control ?? observeShutdown();
   const managed = Boolean(options.managed);
   // Explicit selector always runs exactly that one bot inline (this is also how
@@ -23,8 +15,11 @@ export async function runRun(botName?: string, options: { control?: ShutdownCont
     return;
   }
 
+  const { activeBots, ensureRegistry } = await import('../../config/bots');
+  const { runSupervisor } = await import('../../bot/supervisor');
   let registry = await ensureRegistry();
   if (registry.bots.length === 0 && process.stdout.isTTY) {
+    const { ensureOnboarded } = await import('../../bot/onboarding');
     const ready = await ensureOnboarded({ allowCreate: true });
     if (!ready) { process.exitCode = 1; return; }
     registry = await ensureRegistry();
@@ -35,6 +30,17 @@ export async function runRun(botName?: string, options: { control?: ShutdownCont
 /** Run a single bot inline in this process. `botName` undefined → the implicit
  *  current/default bot (with first-run onboarding allowed). */
 async function runSingle(botName: string | undefined, control: ShutdownControl, managed: boolean): Promise<void> {
+  const { ensureOnboarded, announceEventsWhenLive } = await import('../../bot/onboarding');
+  const { startBridge } = await import('../../bot/bridge');
+  const { acquireSingleInstanceLock, BridgeAlreadyRunningError } = await import('../../core/single-instance');
+  const { clearServicePid, recordServicePid } = await import('../../service/win-startup');
+  const { log } = await import('../../core/logger');
+  const { AdminWriteError } = await import('../../admin/ops');
+  const { createAdminIpcResponder } = await import('../../admin/ipc');
+  const { createAdminService } = await import('../../admin/service');
+  const { installBackendDep, uninstallBackendDep } = await import('../../agent');
+  const { spawnDaemonControl } = await import('./daemon-control');
+  const { mountWebConsole } = await import('../../web/mount');
   const ready = await ensureOnboarded({ allowCreate: !botName, bot: botName });
   if (!ready) {
     process.exitCode = 1;

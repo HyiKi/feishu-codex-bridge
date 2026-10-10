@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { bridgeVersion } from '../core/version';
 import { homedir } from 'node:os';
+import { assertBridgeNotImported } from '../bot/owner-notice';
 import { enterDataAccess, type DataLease } from '../config/data-access';
 import { observeShutdown, type ShutdownControl } from '../host/lifecycle';
 
@@ -15,6 +16,7 @@ let lease: DataLease | undefined;
 let control: ShutdownControl | undefined;
 program.hook('preAction', async (_command, action) => {
   const name = action.name();
+  if (name === 'run' || name === 'host' || name === 'start' || name === 'restart') assertBridgeNotImported(homedir());
   if (name === 'host' || name === 'run') control = observeShutdown(name === 'host');
   if (action.parent?.name() === 'data' || name === 'status' || name === 'desktop' || name === 'stop' || name === '__desktop-service') return;
   lease = await enterDataAccess(homedir());
