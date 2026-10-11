@@ -1,4 +1,5 @@
 import { VOICE_TITLE, VOICE_DESCRIPTION, VOICE_NOTICE, VOICE_DOC_URL } from '../voice/view';
+import { vonvonImportNotice } from '../service/desktop-release';
 /**
  * Web 控制台前端 —— 单文件内嵌 HTML（零依赖、零构建）。
  *
@@ -335,6 +336,8 @@ export const UI_PURE_JS = `
       '<path d="' + path + '" fill="#000000"/></svg>';
   }
 `;
+
+const IMPORT_NOTICE_JSON = JSON.stringify(vonvonImportNotice()).replace(/</g, '\\u003c');
 
 export const UI_HTML = `<!doctype html>
 <html lang="zh-CN">
@@ -806,6 +809,7 @@ ${UI_PURE_JS}
 
   // ── 全局单例状态 ────────────────────────────────────────────────────────────
   var state = null;          // /api/state 快照
+  var importNotice = ${IMPORT_NOTICE_JSON};
   var daemon = null;         // /api/daemon
   var diag = null;           // /api/diagnosis 结果（当前 bot 的探测；切 Tab 必清）
   var catalog = null;        // /api/backends 缓存（后端管理卡 + 项目 picker 复用）
@@ -1318,6 +1322,19 @@ ${UI_PURE_JS}
   function renderOverviewTab(root) {
     var s = summarizeState(state);
     var daemonOn = !!(daemon && daemon.running);
+
+    var importCard = el('div', 'card');
+    importCard.appendChild(el('h2', null, '导入 Vonvon Bot'));
+    importCard.appendChild(el('div', 'note', importNotice.text));
+    if (importNotice.download.kind === 'candidate-page') {
+      var downloadPage = document.createElement('a');
+      downloadPage.textContent = '查看下载页（发布状态未验证）';
+      downloadPage.href = importNotice.download.url;
+      downloadPage.target = '_blank';
+      downloadPage.rel = 'noopener noreferrer';
+      importCard.appendChild(downloadPage);
+    }
+    root.appendChild(importCard);
 
     // KPI 磁贴行
     var kpis = el('div', 'kpis');

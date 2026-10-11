@@ -14,6 +14,7 @@ it('bundled CLI update points to its desktop owner before querying npm',async()=
   try {
     await runUpdate();
     expect(output).toHaveBeenCalledWith('此 CLI 随 Vonvon Bridge 桌面应用提供，请在桌面应用中更新。');
+    expect(output.mock.calls.flat().join('\n').split('可在 Vonvon Bot 中导入已有 Bridge 配置').length - 1).toBe(1);
     expect(spawnProcess).not.toHaveBeenCalled();
   } finally { output.mockRestore(); }
 });

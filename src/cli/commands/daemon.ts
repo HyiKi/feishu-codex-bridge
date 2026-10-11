@@ -2,14 +2,7 @@ import { ensureOnboarded } from '../../bot/onboarding';
 import { activeBots, loadBots } from '../../config/bots';
 import { getServiceAdapter, type ServiceStatus } from '../../service/adapter';
 import { readWebConsole, type WebConsoleRecord } from '../../web/discovery';
-import { desktopReleaseNoticeForHost, getDesktopRelease } from '../../service/desktop-release';
-
-async function printDesktopNotice(): Promise<void> {
-  const release = await getDesktopRelease();
-  if (!release) return;
-  const notice = desktopReleaseNoticeForHost(release);
-  if (notice) console.log(`\n${notice}`);
-}
+import { vonvonImportNotice } from '../../service/desktop-release';
 
 /**
  * Daemon lifecycle. `start` installs ONE launchd/systemd/login service whose
@@ -23,49 +16,45 @@ async function printDesktopNotice(): Promise<void> {
  * active set we check each bot sequentially so its diagnostic output stays together.
  */
 export async function runStart(): Promise<void> {
-  const active = activeBots(await loadBots());
+  try {
+    const active = activeBots(await loadBots());
 
-  if (active.length === 0) {
-    // 零 bot + 非交互（典型：codex/claude 帮用户跑 `start`，没 TTY 没法终端扫码）→ 不在
-    // 前台扫码，直接装服务。服务体跑 `run`，零 bot 会进「引导控制台」（见 runRun），用户
-    // 在浏览器里扫码创建第一个机器人，建完重启即上线。这是「一句话安装」的关键：一条命令
-    // 起好后台 + Web，把「创建机器人」整体搬进浏览器。
-    if (!process.stdout.isTTY) {
-      const status = await getServiceAdapter().install();
-      console.log('✓ 后台服务已安装并启动（还没有机器人 → 已进入「引导控制台」模式）。');
-      console.log('  下一步：运行 `feishu-codex-bridge web` 获取控制台登录链接，在浏览器里扫码创建第一个机器人。');
-      console.log('  （建完机器人后它会自动成为活跃 bot，重启服务即上线。）');
-      printStatus(status);
-      await printDesktopNotice();
-      return;
-    }
-    // Fresh / legacy single-bot install (TTY)：onboard (maybe scan-create) the
-    // implicit current/default bot.
-    const ready = await ensureOnboarded({ allowCreate: true });
-    if (!ready) {
-      process.exitCode = 1;
-      return;
-    }
-  } else {
-    if (active.length > 1) {
-      console.log(`\n后台服务将托管 ${active.length} 个机器人（supervisor 多进程，各自独立进程）：`);
-      for (const b of active) console.log(`  • ${b.name}  (${b.appId})  [${b.tenant}]`);
-      console.log('');
-    }
-    for (const bot of active) {
-      if (active.length > 1) console.log(`\n──── 机器人「${bot.name}」(${bot.appId}) ────`);
-      const ready = await ensureOnboarded({ bot: bot.appId });
+    if (active.length === 0) {
+      if (!process.stdout.isTTY) {
+        const status = await getServiceAdapter().install();
+        console.log('✓ 后台服务已安装并启动（还没有机器人 → 已进入「引导控制台」模式）。');
+        console.log('  下一步：运行 `feishu-codex-bridge web` 获取控制台登录链接，在浏览器里扫码创建第一个机器人。');
+        console.log('  （建完机器人后它会自动成为活跃 bot，重启服务即上线。）');
+        printStatus(status);
+        return;
+      }
+      const ready = await ensureOnboarded({ allowCreate: true });
       if (!ready) {
         process.exitCode = 1;
         return;
       }
+    } else {
+      if (active.length > 1) {
+        console.log(`\n后台服务将托管 ${active.length} 个机器人（supervisor 多进程，各自独立进程）：`);
+        for (const b of active) console.log(`  • ${b.name}  (${b.appId})  [${b.tenant}]`);
+        console.log('');
+      }
+      for (const bot of active) {
+        if (active.length > 1) console.log(`\n──── 机器人「${bot.name}」(${bot.appId}) ────`);
+        const ready = await ensureOnboarded({ bot: bot.appId });
+        if (!ready) {
+          process.exitCode = 1;
+          return;
+        }
+      }
     }
-  }
 
-  const status = await getServiceAdapter().install();
-  console.log(installedNote());
-  printStatus(status);
-  await printDesktopNotice();
+    const status = await getServiceAdapter().install();
+    console.log(installedNote());
+    printStatus(status);
+  } finally {
+    console.log(`\n${vonvonImportNotice().text}`);
+  }
 }
 
 export async function runStop(): Promise<void> {

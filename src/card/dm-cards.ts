@@ -31,7 +31,7 @@ import { labelScope } from '../config/scopes';
 import { summarizeEventDiagnosis, type EventDiagnosis } from '../utils/event-diagnosis';
 import { actions, actionsFixed, button, card, form, hr, input, linkButton, md, note, selectMenu, splitRow, submitButton, type CardElement, type CardObject, type SelectOption } from './cards';
 import { reasoningEffortLabel, relativeTime } from './command-cards';
-import type { DesktopRelease, VonvonImportNotice } from '../service/desktop-release';
+import { vonvonImportNotice, type DesktopRelease, type VonvonImportNotice } from '../service/desktop-release';
 
 /** applink to open a Feishu group chat by chat_id (oc_xxx). Feishu has no
  * deep link to a specific thread/topic, so this lands in the group and the
@@ -144,18 +144,13 @@ export function kindLabel(kind?: 'multi' | 'single'): string {
   return kind === 'single' ? '💬 单会话群' : '👥 多话题群';
 }
 
-function desktopReleaseElements(release?: DesktopRelease | null): CardElement[] {
-  if (!release) return [];
-  return [
-    md(`**Vonvon Bridge 桌面版 v${release.version} 已提供**`),
-    note('安装后可接续已有 Agent、飞书群和配置，无需重新配置。CLI 仍可单独使用。'),
-    actions(release.installers.map((installer) => linkButton(
-      installer.platform === 'macOS' ? '安装桌面版 · macOS Apple Silicon' : '安装桌面版 · Windows x64',
-      installer.url,
-      'primary',
-    ))),
-    hr(),
-  ];
+function importNoticeElements(): CardElement[] {
+  const notice = vonvonImportNotice();
+  const elements: CardElement[] = [{ tag: 'div', text: { tag: 'plain_text', content: notice.text } }];
+  if (notice.download.kind === 'candidate-page') {
+    elements.push(actions([linkButton('查看下载页（发布状态未验证）', notice.download.url)]));
+  }
+  return [...elements, hr()];
 }
 
 /**
@@ -176,10 +171,10 @@ function desktopReleaseElements(release?: DesktopRelease | null): CardElement[] 
  * the caller.
  */
 export function buildDmMenuCard(opts: { webConsoleUrl?: string; version?: string; desktopRelease?: DesktopRelease | null } = {}): CardObject {
-  const { webConsoleUrl, version, desktopRelease } = opts;
+  const { webConsoleUrl, version } = opts;
   return card(
     [
-      ...desktopReleaseElements(desktopRelease),
+      ...importNoticeElements(),
       md('私聊用于**建项目和管理**；具体任务请到项目群里 @我。'),
       hr(),
       // 两行按钮固定宽度、左对齐；两行宽度配平后总长相等、右边缘对齐（见 MENU_BTN_W_*）。
@@ -254,7 +249,7 @@ const backToMenu = () => actions([button('⬅️ 菜单', { a: DM.menu })]);
 export function buildUpdateCard(state: UpdateCardState): CardObject {
   switch (state.phase) {
     case 'checking':
-      return card([md('⏳ 正在查询最新版本…'), note('从 npm registry 拉取版本信息，请稍候。')], {
+      return card([md('⏳ 正在查询最新版本…'), note('从 npm registry 拉取版本信息，请稍候。'), ...importNoticeElements()], {
         header: { title: '⬆️ 版本更新', template: 'turquoise' },
       });
 
@@ -262,7 +257,7 @@ export function buildUpdateCard(state: UpdateCardState): CardObject {
       const cur = state.current ?? '?';
       if (state.distribution === 'bundled') {
         return card(
-          [md(`当前版本：**v${cur}**`), note('此 Bridge 随 Vonvon Bridge 桌面应用提供，请在桌面应用中更新。'), ...desktopReleaseElements(state.desktopRelease), backToMenu()],
+          [md(`当前版本：**v${cur}**`), note('此 Bridge 随 Vonvon Bridge 桌面应用提供，请在桌面应用中更新。'), ...importNoticeElements(), backToMenu()],
           { header: { title: '⬆️ 版本更新', template: 'blue' } },
         );
       }
@@ -271,7 +266,7 @@ export function buildUpdateCard(state: UpdateCardState): CardObject {
           [
             md(`当前版本：**v${cur}**`),
             md('⚠️ 查不到最新版本（网络或 npm registry 问题）。'),
-            ...desktopReleaseElements(state.desktopRelease),
+            ...importNoticeElements(),
             actions([button('🔄 重试', { a: DM.update }), button('⬅️ 菜单', { a: DM.menu })]),
           ],
           { header: { title: '⬆️ 版本更新', template: 'red' } },
@@ -279,7 +274,7 @@ export function buildUpdateCard(state: UpdateCardState): CardObject {
       }
       if (!state.hasUpdate) {
         return card(
-          [md(`✅ 已是最新版本：**v${cur}**`), ...desktopReleaseElements(state.desktopRelease), backToMenu()],
+          [md(`✅ 已是最新版本：**v${cur}**`), ...importNoticeElements(), backToMenu()],
           { header: { title: '⬆️ 版本更新', template: 'green' } },
         );
       }
@@ -292,7 +287,7 @@ export function buildUpdateCard(state: UpdateCardState): CardObject {
           [
             ...head,
             md('检测到**源码开发模式**（仓库内有 .git）。请在终端用 `git pull && npm i` 更新，而不是全局安装。'),
-            ...desktopReleaseElements(state.desktopRelease),
+            ...importNoticeElements(),
             backToMenu(),
           ],
           { header: { title: '⬆️ 版本更新', template: 'orange' } },
@@ -302,7 +297,7 @@ export function buildUpdateCard(state: UpdateCardState): CardObject {
         [
           ...head,
           note('点「立即更新」会执行 `npm i -g` 并自动重启后台服务（约数十秒）。'),
-          ...desktopReleaseElements(state.desktopRelease),
+          ...importNoticeElements(),
           actions([
             button('⬆️ 立即更新', { a: DM.updateDo }, 'primary'),
             button('⬅️ 菜单', { a: DM.menu }),
@@ -317,6 +312,7 @@ export function buildUpdateCard(state: UpdateCardState): CardObject {
         [
           md(`⏳ 正在更新到最新版…`),
           note(`从 v${state.from ?? '?'} 升级中，下载安装约数十秒，请勿重复点击。`),
+          ...importNoticeElements(),
         ],
         { header: { title: '⬆️ 版本更新', template: 'turquoise' } },
       );
@@ -326,7 +322,7 @@ export function buildUpdateCard(state: UpdateCardState): CardObject {
         ? note('正在重启后台服务以生效 —— 重启期间本卡片停止更新；稍后发我任意消息可重开管理台。')
         : note('前台模式：请在终端手动重启 `run` 进程使新版本生效。');
       return card(
-        [md(`✅ 已更新 **v${state.from ?? '?'} → v${state.to ?? '?'}**`), tail, ...desktopReleaseElements(state.desktopRelease)],
+        [md(`✅ 已更新 **v${state.from ?? '?'} → v${state.to ?? '?'}**`), tail, ...importNoticeElements()],
         { header: { title: '⬆️ 版本更新', template: 'green' } },
       );
     }
@@ -337,6 +333,7 @@ export function buildUpdateCard(state: UpdateCardState): CardObject {
           md('❌ **更新失败**'),
           state.message ? note(state.message) : note('npm 安装未成功。'),
           md('可在终端手动执行：`npm i -g ' + '@modelzen/feishu-codex-bridge@latest`（必要时加 sudo）。'),
+          ...importNoticeElements(),
           actions([button('🔄 重试', { a: DM.update }), button('⬅️ 菜单', { a: DM.menu })]),
         ],
         { header: { title: '⬆️ 版本更新', template: 'red' } },

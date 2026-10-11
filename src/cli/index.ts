@@ -79,12 +79,14 @@ program
   .command('status')
   .description('后台 daemon 状态（pid / 日志路径 / 上次退出码）')
   .action(async () => {
-    const desktopRelease = await (await import('../service/desktop-release')).getDesktopRelease();
+    const { getDesktopRelease, vonvonImportNotice } = await import('../service/desktop-release');
+    const desktopRelease = await getDesktopRelease();
     console.log(JSON.stringify({
       installation: (await import('../service/control')).inspectInstallation(homedir()),
       host: await (await import('../host/client')).inspectHost(homedir()),
       ...(desktopRelease ? { desktopRelease } : {}),
     }, null, 2));
+    console.error(vonvonImportNotice().text);
   });
 
 program

@@ -58,19 +58,19 @@ describe('published desktop release guidance', () => {
     expect(aborting).toHaveBeenCalledTimes(1);
   });
 
-  it('puts installer links near the top of the DM menu and update result only when published', () => {
+  it('preserves the old release parser without presenting its installer as a Bot download', () => {
     const available = parseDesktopRelease(release());
     expect(available).not.toBeNull();
     const menu = JSON.stringify(buildDmMenuCard({ desktopRelease: available }));
-    expect(menu).toContain('Vonvon Bridge 桌面版');
-    expect(menu).toContain(macName);
-    expect(menu).toContain(winName);
-    expect(menu.indexOf('桌面版')).toBeLessThan(menu.indexOf('私聊用于'));
-    expect(JSON.stringify(buildDmMenuCard())).not.toContain('安装桌面版');
+    expect(menu).toContain('导入已有 Bridge 配置');
+    expect(menu).not.toContain(macName);
+    expect(menu).not.toContain(winName);
     const update = JSON.stringify(buildUpdateCard({ phase: 'checked', current: '0.7.0', latest: '0.7.0', hasUpdate: false, desktopRelease: available }));
-    expect(update).toContain('安装桌面版');
+    expect(update).toContain('导入已有 Bridge 配置');
+    expect(update).not.toContain(macName);
     const bundled = JSON.stringify(buildUpdateCard({ phase: 'checked', current: '0.7.0', latest: '0.7.1', hasUpdate: true, distribution: 'bundled', desktopRelease: available }));
     expect(bundled).toContain('请在桌面应用中更新');
     expect(bundled).not.toContain('立即更新');
+    expect(bundled).not.toContain(macName);
   });
 });

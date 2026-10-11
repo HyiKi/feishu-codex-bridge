@@ -62,6 +62,7 @@ describe('automatic event checks during startup', () => {
   ])('start continues without confirmation or browser for $state', async (d) => {
     mocks.diagnosis.mockResolvedValue(d);
     await runStart();
+    expect(output().split('可在 Vonvon Bot 中导入已有 Bridge 配置').length - 1).toBe(1);
     expect(mocks.install).toHaveBeenCalledOnce();
     expect(mocks.open).not.toHaveBeenCalled();
     expect(mocks.prompt).not.toHaveBeenCalled();
@@ -93,6 +94,15 @@ describe('automatic event checks during startup', () => {
     await runStart();
     expect(mocks.install).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
+    expect(output().split('可在 Vonvon Bot 中导入已有 Bridge 配置').length - 1).toBe(1);
+  });
+
+  it('keeps the service installation error and prints one import notice', async () => {
+    mocks.validate.mockResolvedValue({ ok: true, botName: 'test', missingScopes: [] });
+    mocks.diagnosis.mockResolvedValue(healthy);
+    mocks.install.mockRejectedValue(new Error('service install failed'));
+    await expect(runStart()).rejects.toThrow('service install failed');
+    expect(output().split('可在 Vonvon Bot 中导入已有 Bridge 配置').length - 1).toBe(1);
   });
 
   it('run reports newly published subscriptions without opening the configuration page', async () => {
