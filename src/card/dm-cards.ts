@@ -31,7 +31,7 @@ import { labelScope } from '../config/scopes';
 import { summarizeEventDiagnosis, type EventDiagnosis } from '../utils/event-diagnosis';
 import { actions, actionsFixed, button, card, form, hr, input, linkButton, md, note, selectMenu, splitRow, submitButton, type CardElement, type CardObject, type SelectOption } from './cards';
 import { reasoningEffortLabel, relativeTime } from './command-cards';
-import type { DesktopRelease } from '../service/desktop-release';
+import type { DesktopRelease, VonvonImportNotice } from '../service/desktop-release';
 
 /** applink to open a Feishu group chat by chat_id (oc_xxx). Feishu has no
  * deep link to a specific thread/topic, so this lands in the group and the
@@ -1986,4 +1986,12 @@ export function buildAddAllowedCard(
     ],
     { header: { title: '➕ 添加白名单成员', template: 'blue' } },
   );
+}
+
+export function buildOwnerImportNoticeCard(notice: VonvonImportNotice): CardObject {
+  const elements: CardElement[] = [{ tag: 'div', text: { tag: 'plain_text', content: notice.text } }];
+  if (notice.download.kind === 'candidate-page') {
+    elements.push(actions([linkButton('查看下载页（发布状态未验证）', notice.download.url)]));
+  }
+  return card(elements, { header: { title: '导入 Vonvon Bot' }, forward: false });
 }

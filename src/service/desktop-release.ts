@@ -92,3 +92,23 @@ export function desktopReleaseNoticeForHost(release: DesktopRelease): string | n
   if (!installer) return null;
   return `Vonvon Bridge 桌面版 v${release.version} 已提供。安装后可接续已有 Agent、飞书群和配置，无需重新配置；CLI 仍可单独使用。\n${installer.platform} 安装包：${installer.url}`;
 }
+
+export type VonvonImportNotice = {
+  text: string;
+  download: { kind: 'unconfigured' } | { kind: 'candidate-page'; url: string };
+};
+
+export function vonvonImportNotice(): VonvonImportNotice {
+  const text = '可在 Vonvon Bot 中导入已有 Bridge 配置，继续使用已有 Agent 和飞书群。';
+  const candidate = process.env.VONVON_BOT_DOWNLOAD_PAGE;
+  if (candidate) {
+    try {
+      const url = new URL(candidate);
+      if (url.origin === 'https://github.com' && !url.username && !url.password && !url.search && !url.hash
+        && /^\/modelzen\/vonvon-bot\/releases(?:\/latest|\/tag\/[^/]+)?\/?$/.test(url.pathname)) {
+        return { text: `${text} 下载页的安装包发布状态尚未验证。`, download: { kind: 'candidate-page', url: url.href } };
+      }
+    } catch {}
+  }
+  return { text, download: { kind: 'unconfigured' } };
+}
