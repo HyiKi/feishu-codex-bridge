@@ -6,6 +6,8 @@
 [![license](https://badgen.net/npm/license/@modelzen/feishu-codex-bridge)](https://github.com/modelzen/feishu-codex-bridge/blob/main/LICENSE)
 [![官网](https://badgen.net/badge/%E5%AE%98%E7%BD%91/bridge.vonvon.cc/blue)](https://bridge.vonvon.cc)
 
+> **Mac 用户推荐改用 [Vonvon Bot](https://bot.vonvon.cc)**（免费），支持一键导入现有的 bot、群和会话。Windows 和 Linux 用户继续使用本工具。
+
 🌐 **官网：<https://bridge.vonvon.cc>**
 
 > 把飞书 / Lark 桥接到你本机的 [Codex](https://github.com/openai/codex) 或 [Claude Code](https://www.anthropic.com/claude-code)，在群里 @ 机器人就能让它在指定项目目录里干活，结果以流式 Markdown 卡片实时回到群里。

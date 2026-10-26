@@ -66,6 +66,57 @@ describe('acquireSingleInstanceLock 协议逻辑', () => {
     }
   });
 
+  // 0.6.14 的报错叫人 `kill <pid>`，而导入 bot 后长期占着这把锁的是 Vonvon Bot 的 daemon：
+  // 用户照做会弄坏 Vonvon Bot（e07）。提示里不再出现 kill，并认得出 Vonvon Bot 持有者。
+  it.skipIf(process.platform === 'win32')('持有者命令行带 vonvon → 认定是 Vonvon Bot，提示在由它使用', async () => {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 8000)', 'vonvon-bot-daemon'], { stdio: 'ignore' });
+    try {
+      writeFileSync(file, rec(child.pid!));
+      let caught: unknown;
+      try {
+        acquireSingleInstanceLock('app_a', file);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(BridgeAlreadyRunningError);
+      const err = caught as BridgeAlreadyRunningError;
+      expect(err.holder).toBe('vonvon-bot');
+      expect(err.pid).toBe(child.pid);
+      expect(err.message).toContain('Vonvon Bot');
+      expect(err.message).toContain(String(child.pid));
+      expect(err.message).not.toMatch(/kill/);
+    } finally {
+      child.kill('SIGKILL');
+      await waitExit(child);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32' || /vonvon/i.test(process.execPath))(
+    '认不出的持有者 → 两种可能都说到，不叫人 kill',
+    async () => {
+      const child = spawnSleeper();
+      try {
+        writeFileSync(file, rec(child.pid!));
+        let caught: unknown;
+        try {
+          acquireSingleInstanceLock('app_a', file);
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(BridgeAlreadyRunningError);
+        const err = caught as BridgeAlreadyRunningError;
+        expect(err.holder).toBe('unknown');
+        expect(err.message).toContain(`PID ${child.pid}`);
+        expect(err.message).toContain('Vonvon Bot');
+        expect(err.message).toContain('feishu-codex-bridge stop');
+        expect(err.message).not.toMatch(/kill/);
+      } finally {
+        child.kill('SIGKILL');
+        await waitExit(child);
+      }
+    },
+  );
+
   it('pid 复用：POSIX 接管晚启动的进程，Windows 缺少启动时间时保守拒绝', async () => {
     const child = spawnSleeper();
     try {

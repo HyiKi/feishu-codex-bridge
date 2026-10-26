@@ -2,6 +2,9 @@ import { ensureOnboarded, announceEventsWhenLive } from '../../bot/onboarding';
 import { startBridge } from '../../bot/bridge';
 import { runSupervisor } from '../../bot/supervisor';
 import { acquireSingleInstanceLock, BridgeAlreadyRunningError } from '../../core/single-instance';
+import { refuseIfMigrated } from '../../core/vonvon-migration';
+import { sendVonvonNoticeOnce } from '../../core/vonvon-notice';
+import { LAUNCHD_LABEL, statusLaunchd, uninstallLaunchd } from '../../service/launchd';
 import { clearServicePid, recordServicePid } from '../../service/win-startup';
 import { activeBots, loadBots } from '../../config/bots';
 import { log } from '../../core/logger';
@@ -26,8 +29,16 @@ import { mountWebConsole, type MountedWebConsole } from '../../web/mount';
  * initialized"), take the per-bot single-instance lock, then bring up the
  * bridge. SIGINT/SIGTERM trigger a graceful teardown that closes every codex
  * session (no orphan app-servers) and drops the WS before exiting.
+ *
+ * 入口先看 Vonvon Bot 的迁移标记（早于向导、bot 配置和单实例锁）：bot 已经迁走就
+ * 拒绝启动。监督子进程（`run --bot`）和 launchd 拉起的 `run` 同样走这里。
  */
 export async function runRun(botName?: string): Promise<void> {
+  if (refuseIfMigrated('run')) {
+    await unloadLaunchdJobAfterRefusal();
+    return;
+  }
+
   // Explicit selector always runs exactly that one bot inline (this is also how
   // the supervisor launches each child: `run --bot <appId>`).
   if (botName) {
@@ -50,6 +61,39 @@ export async function runRun(botName?: string): Promise<void> {
     return;
   }
   await runSingle(active[0]?.name);
+}
+
+/**
+ * 本进程是不是 launchd 服务拉起的：launchd 给它起的进程设了 `XPC_SERVICE_NAME`（等于
+ * 服务标签）；万一这个变量没带上，再问 launchd 这个服务的 pid 是不是自己。在终端里手动
+ * `run` 两条都不成立。
+ */
+function isLaunchdJob(): boolean {
+  if (process.platform !== 'darwin') return false;
+  if (process.env.XPC_SERVICE_NAME === LAUNCHD_LABEL) return true;
+  try {
+    return statusLaunchd().pid === String(process.pid);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 被 launchd 拉起的 `run` 因为迁移标记拒绝启动后，把 launchd 服务一并卸掉。plist 里
+ * `KeepAlive` 是 true：只退出的话 launchd 每隔十几秒就拉起一次、被拒一次，日志被刷屏。
+ * 做法和 `stop` 一样（`uninstallLaunchd`：删 plist、bootout 卸载），所以重新登录后也不会
+ * 再自启；要回到 bridge 的人删掉标记后重新 `start` 即可。在终端里手动 `run` 被拒时不碰
+ * 任何服务。bootout 会把本进程一起带走，所以提示必须先打印、卸载放最后。
+ */
+async function unloadLaunchdJobAfterRefusal(): Promise<void> {
+  if (!isLaunchdJob()) return;
+  console.error('  bridge 的后台服务已一并卸载，不会再被反复拉起；删掉标记后重新运行 `feishu-codex-bridge start` 即可恢复。');
+  log.info('run', 'migrated-unload-launchd');
+  try {
+    await uninstallLaunchd();
+  } catch (err) {
+    log.fail('run', err, { phase: 'migrated-unload-launchd' });
+  }
 }
 
 /**
@@ -164,6 +208,8 @@ async function runSingle(botName?: string): Promise<void> {
   const handle = await startBridge({ cfg, appSecret: secret, fallbackCwd });
   // 配置长连接需要 bridge 在线，启动后继续检查用户发布的订阅更新。
   void announceEventsWhenLive(ready);
+  // macOS 上第一次成功启动时，给主人私聊一次 Vonvon Bot 推荐。不等它、不会抛，失败只记日志。
+  void sendVonvonNoticeOnce({ cfg, channel: handle.channel });
 
   // ── Web 控制台 / supervisor IPC（按进程形态二选一）────────────────────────
   let webConsole: MountedWebConsole | undefined;
