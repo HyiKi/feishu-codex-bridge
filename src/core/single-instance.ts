@@ -44,13 +44,19 @@ export class BridgeAlreadyRunningError extends Error {
   constructor(
     public readonly pid: number,
     public readonly holder: LockHolderKind = 'unknown',
+    /** 仅测试注入；生产固定 process.platform。 */
+    platform: NodeJS.Platform = process.platform,
   ) {
     super(
-      holder === 'vonvon-bot'
-        ? `这个 bot 正在由 Vonvon Bot 使用（PID ${pid}）。两个程序连同一个飞书应用会抢卡片回调，` +
+      // Vonvon Bot 只有 Mac 版：Windows、Linux 上不会有它占锁，也不该看到它，保持 0.6.14 的原话。
+      platform !== 'darwin'
+        ? `另一个 bridge 进程已在运行 (PID ${pid})。先停掉它（kill ${pid}）再启动——` +
+            `两个进程会抢同一 App 的卡片回调，导致按钮时灵时不灵。`
+        : holder === 'vonvon-bot'
+          ? `这个 bot 正在由 Vonvon Bot 使用（PID ${pid}）。两个程序连同一个飞书应用会抢卡片回调，` +
             `按钮会时灵时不灵，所以 bridge 不能同时运行。请在 Vonvon Bot 里使用它，不要结束这个进程；` +
             `确实要回到 bridge，先在 Vonvon Bot 里停掉这个 bot。`
-        : `另一个进程已在使用这个 bot（PID ${pid}）。两个进程连同一个飞书应用会抢卡片回调，` +
+          : `另一个进程已在使用这个 bot（PID ${pid}）。两个进程连同一个飞书应用会抢卡片回调，` +
             `按钮会时灵时不灵，所以不能同时运行。如果这个 bot 已经导入 Vonvon Bot，那就是 Vonvon Bot 在用，` +
             `请在 Vonvon Bot 里使用，不要结束这个进程；否则请先停掉另一个 bridge` +
             `（后台服务用 \`feishu-codex-bridge stop\`，前台运行的在它的终端按 Ctrl+C），再启动。`,

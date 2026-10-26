@@ -12,6 +12,7 @@ import {
 import { buildDaemonControlCommand, type DaemonControlAction } from '../../admin/host';
 import { readWebConsole } from '../../web/discovery';
 import { log } from '../../core/logger';
+import { vonvonMigrationMarker } from '../../core/vonvon-migration';
 
 /**
  * detached helper：Web 控制台的「重启 daemon」/「升级」按钮的真正执行者。
@@ -68,6 +69,11 @@ export async function runDaemonControl(action: string): Promise<void> {
  * 已在跑就当幂等（install 内部 bootout+bootstrap 重建，等价重启）。
  */
 async function doStart(): Promise<void> {
+  // bot 已经迁到 Vonvon Bot（Web 预览的「启动」按钮也走这里）：不装服务，和 `start` 一样拒绝。
+  if (vonvonMigrationMarker()) {
+    log.info('daemon-control', 'start-refused-migrated', {});
+    return;
+  }
   await getServiceAdapter().install();
   log.info('daemon-control', 'start-issued', {});
 }
