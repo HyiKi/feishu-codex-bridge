@@ -55,7 +55,7 @@ export class BridgeAlreadyRunningError extends Error {
         : holder === 'vonvon-bot'
           ? `这个 bot 正在由 Vonvon Bot 使用（PID ${pid}）。两个程序连同一个飞书应用会抢卡片回调，` +
             `按钮会时灵时不灵，所以 bridge 不能同时运行。请在 Vonvon Bot 里使用它，不要结束这个进程；` +
-            `确实要回到 bridge，先在 Vonvon Bot 里停掉这个 bot。`
+            `确实要回到 bridge，先在 Vonvon Bot 里移除这个 Bot（只停用不行，Vonvon Bot 仍会占着它）。`
           : `另一个进程已在使用这个 bot（PID ${pid}）。两个进程连同一个飞书应用会抢卡片回调，` +
             `按钮会时灵时不灵，所以不能同时运行。如果这个 bot 已经导入 Vonvon Bot，那就是 Vonvon Bot 在用，` +
             `请在 Vonvon Bot 里使用，不要结束这个进程；否则请先停掉另一个 bridge` +

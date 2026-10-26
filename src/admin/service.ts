@@ -240,10 +240,12 @@ export interface AdminHostDoctor extends HostDoctor {
 /** 只读预览（daemon 未跑 / 独立 `web` 进程）里写方法统一抛它；HTTP 层映射 501。 */
 export class NotWiredYetError extends Error {
   readonly code = 'NOT_WIRED_YET';
-  constructor(action: string) {
+  /** `detail` 给了就整句替换默认文案：有些动作不是「没起 daemon」，而是别的原因不让做（比如 bot 已迁到 Vonvon Bot）。 */
+  constructor(action: string, detail?: string) {
     super(
-      `「${action}」需要 daemon 在跑：当前是只读预览（直读本机文件）。` +
-        '请先 `feishu-codex-bridge run`（或 `start`）启动，再运行 `web` 自动跳到 daemon 的控制台执行写操作。',
+      detail ??
+        `「${action}」需要 daemon 在跑：当前是只读预览（直读本机文件）。` +
+          '请先 `feishu-codex-bridge run`（或 `start`）启动，再运行 `web` 自动跳到 daemon 的控制台执行写操作。',
     );
     this.name = 'NotWiredYetError';
   }

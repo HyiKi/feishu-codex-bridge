@@ -34,8 +34,10 @@ import { mountWebConsole, type MountedWebConsole } from '../../web/mount';
  * 拒绝启动。监督子进程（`run --bot`）和 launchd 拉起的 `run` 同样走这里。
  */
 export async function runRun(botName?: string): Promise<void> {
-  if (refuseIfMigrated('run')) {
-    await unloadLaunchdJobAfterRefusal();
+  const blocked = refuseIfMigrated('run');
+  if (blocked) {
+    // 只有确认标记在才卸服务；读不清标记（权限、EIO）可能只是暂时的，卸掉就再也不会自启了。
+    if (blocked.kind === 'migrated') await unloadLaunchdJobAfterRefusal(MIGRATED_UNLOAD_NOTE);
     return;
   }
 
@@ -78,21 +80,31 @@ function isLaunchdJob(): boolean {
   }
 }
 
+/** launchd 拉起的 `run` 因为迁移标记被拒后，卸掉服务时打印的说明。 */
+const MIGRATED_UNLOAD_NOTE =
+  '  bridge 的后台服务正在卸载，不会再被反复拉起。要回到 bridge：先在 Vonvon Bot 里移除这些 Bot（只停用不行），' +
+  '再删掉标记文件，然后重新运行 `feishu-codex-bridge start`。';
+
+/** launchd 拉起的 `run` 因为 Vonvon Bot 占着锁被拒后，卸掉服务时打印的说明。 */
+const LOCK_UNLOAD_NOTE =
+  '  bridge 的后台服务正在卸载，不会再被反复拉起；在 Vonvon Bot 里移除这个 Bot 后，重新运行 `feishu-codex-bridge start` 即可恢复。';
+
 /**
- * 被 launchd 拉起的 `run` 因为迁移标记拒绝启动后，把 launchd 服务一并卸掉。plist 里
- * `KeepAlive` 是 true：只退出的话 launchd 每隔十几秒就拉起一次、被拒一次，日志被刷屏。
- * 做法和 `stop` 一样（`uninstallLaunchd`：删 plist、bootout 卸载），所以重新登录后也不会
- * 再自启；要回到 bridge 的人删掉标记后重新 `start` 即可。在终端里手动 `run` 被拒时不碰
- * 任何服务。bootout 会把本进程一起带走，所以提示必须先打印、卸载放最后。
+ * 被 launchd 拉起的 `run` 因为迁移标记、或者 Vonvon Bot 占着锁而拒绝启动后，把 launchd
+ * 服务一并卸掉。plist 里 `KeepAlive` 是 true：只退出的话 launchd 每隔十几秒就拉起一次、
+ * 被拒一次，日志被刷屏（还会每轮向飞书校验一次凭据）。做法和 `stop` 一样
+ * （`uninstallLaunchd`：删 plist、bootout 卸载），所以重新登录后也不会再自启；要回到
+ * bridge 的人先在 Vonvon Bot 里移除 Bot（只停用它仍占着锁），再重新 `start`。在终端里手动
+ * `run` 被拒时不碰任何服务。bootout 会把本进程一起带走，所以提示必须先打印、卸载放最后。
  */
-async function unloadLaunchdJobAfterRefusal(): Promise<void> {
+async function unloadLaunchdJobAfterRefusal(note: string): Promise<void> {
   if (!isLaunchdJob()) return;
-  console.error('  bridge 的后台服务已一并卸载，不会再被反复拉起；删掉标记后重新运行 `feishu-codex-bridge start` 即可恢复。');
-  log.info('run', 'migrated-unload-launchd');
+  console.error(note);
+  log.info('run', 'refused-unload-launchd');
   try {
     await uninstallLaunchd();
   } catch (err) {
-    log.fail('run', err, { phase: 'migrated-unload-launchd' });
+    log.fail('run', err, { phase: 'refused-unload-launchd' });
   }
 }
 
@@ -190,8 +202,12 @@ async function runSingle(botName?: string): Promise<void> {
       // service.pid still points at us; the live winner keeps its own).
       clearServicePid();
       console.error(`✗ ${err.message}`);
-      log.info('run', 'already-running', { pid: err.pid });
+      log.info('run', 'already-running', { pid: err.pid, holder: err.holder });
       process.exitCode = 1;
+      // Vonvon Bot 导入过这个 bot 之后会一直占着锁，被拉起的 `run` 自己退出就没有尽头：
+      // KeepAlive 每十几秒拉起一次。launchd 单进程服务这里一并卸掉；supervisor 的子进程
+      // （有 IPC 通道）不动，卸了会把同一个服务里别的 bot 一起带走，supervisor 自己有退避。
+      if (err.holder === 'vonvon-bot' && !process.send) await unloadLaunchdJobAfterRefusal(LOCK_UNLOAD_NOTE);
       return;
     }
     throw err;

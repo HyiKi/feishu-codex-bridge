@@ -1,11 +1,12 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runDaemonControl } from '../src/cli/commands/daemon-control';
 
 // Web 只读预览的「启动」按钮经 `__daemon-control start` 装后台服务。迁移标记在时它和 `start`
-// 一样拒绝，不装服务；没标记照常装。数据目录指到临时目录，绝不碰真实的 ~/.feishu-codex-bridge。
+// 一样拒绝，不装服务（读不清标记也拒）；没标记照常装；Windows、Linux 不查标记。
+// 数据目录指到临时目录，绝不碰真实的 ~/.feishu-codex-bridge。
 
 const h = vi.hoisted(() => ({
   marker: '/nonexistent-bridge-dir-for-test/vonvon-migration.json',
@@ -25,14 +26,21 @@ vi.mock('../src/service/adapter', () => ({
   isServiceRunning: vi.fn(),
 }));
 
+const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+const setPlatform = (value: NodeJS.Platform): void => {
+  Object.defineProperty(process, 'platform', { ...realPlatform, value });
+};
+
 let dir: string;
 beforeEach(() => {
+  setPlatform('darwin');
   vi.clearAllMocks();
   dir = mkdtempSync(join(tmpdir(), 'vonvon-dc-'));
   h.marker = join(dir, 'vonvon-migration.json');
   h.install.mockResolvedValue({ installed: true, running: true });
 });
 afterEach(() => {
+  Object.defineProperty(process, 'platform', realPlatform);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -50,4 +58,28 @@ describe('__daemon-control start', () => {
     await runDaemonControl('start');
     expect(h.install).not.toHaveBeenCalled();
   });
+
+  it.each(['linux', 'win32'] as const)('%s：Vonvon Bot 只有 Mac 版，有标记也照常装服务', async (platform) => {
+    setPlatform(platform);
+    writeFileSync(h.marker, '{"version":1}');
+    await runDaemonControl('start');
+    expect(h.install).toHaveBeenCalledTimes(1);
+  });
+
+  // root 不受目录权限限制，Windows 没有 POSIX 权限位。
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    '数据目录读不了、说不准标记在不在：同样不装服务（fail-closed）',
+    async () => {
+      const data = join(dir, 'locked-data');
+      mkdirSync(data);
+      h.marker = join(data, 'vonvon-migration.json');
+      chmodSync(data, 0o000);
+      try {
+        await runDaemonControl('start');
+      } finally {
+        chmodSync(data, 0o700);
+      }
+      expect(h.install).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -245,6 +245,14 @@ describe('BridgeAlreadyRunningError 的提示语', () => {
     expect(msg).not.toMatch(/kill/);
   });
 
+  // Vonvon Bot 对导入过的 bot 一直占着锁，只有「移除 Bot」才放；「停用」不放。提示说「停掉」会让人走不出去。
+  it('macOS、持有者是 Vonvon Bot：回到 bridge 要先「移除」Bot，只停用不行', () => {
+    const msg = new BridgeAlreadyRunningError(4242, 'vonvon-bot', 'darwin').message;
+    expect(msg).toContain('移除这个 Bot');
+    expect(msg).toContain('只停用不行');
+    expect(msg).not.toContain('停掉这个 bot');
+  });
+
   it('macOS、认不出持有者：两种可能都说到，不叫人 kill', () => {
     const msg = new BridgeAlreadyRunningError(4242, 'unknown', 'darwin').message;
     expect(msg).toContain('PID 4242');
