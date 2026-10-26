@@ -6,7 +6,7 @@
 [![license](https://badgen.net/npm/license/@modelzen/feishu-codex-bridge)](https://github.com/modelzen/feishu-codex-bridge/blob/main/LICENSE)
 [![官网](https://badgen.net/badge/%E5%AE%98%E7%BD%91/bridge.vonvon.cc/blue)](https://bridge.vonvon.cc)
 
-> **Mac 用户推荐改用 [Vonvon Bot](https://bot.vonvon.cc)**（免费），支持一键导入现有的 bot、群和会话。Windows 和 Linux 用户继续使用本工具。
+> **Mac 用户推荐改用 [Vonvon Bot](https://vonvon.cc)**（免费），支持一键导入现有的 bot、群和会话。Windows 和 Linux 用户继续使用本工具。
 
 🌐 **官网：<https://bridge.vonvon.cc>**
 
