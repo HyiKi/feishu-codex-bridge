@@ -66,6 +66,50 @@ describe('acquireSingleInstanceLock 协议逻辑', () => {
     }
   });
 
+  // 0.6.14 的报错叫人 `kill <pid>`，而导入 bot 后长期占着这把锁的是 Vonvon Bot 的 daemon：
+  // 用户照做会弄坏 Vonvon Bot（e07）。持有者的命令行带 vonvon 就认作 Vonvon Bot，其余认不出。
+  it.skipIf(process.platform === 'win32')('持有者命令行带 vonvon → 认定是 Vonvon Bot', async () => {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 8000)', 'vonvon-bot-daemon'], { stdio: 'ignore' });
+    try {
+      writeFileSync(file, rec(child.pid!));
+      let caught: unknown;
+      try {
+        acquireSingleInstanceLock('app_a', file);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(BridgeAlreadyRunningError);
+      const err = caught as BridgeAlreadyRunningError;
+      expect(err.holder).toBe('vonvon-bot');
+      expect(err.pid).toBe(child.pid);
+      expect(err.message).toContain(String(child.pid));
+    } finally {
+      child.kill('SIGKILL');
+      await waitExit(child);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32' || /vonvon/i.test(process.execPath))(
+    '认不出的持有者 → holder 是 unknown',
+    async () => {
+      const child = spawnSleeper();
+      try {
+        writeFileSync(file, rec(child.pid!));
+        let caught: unknown;
+        try {
+          acquireSingleInstanceLock('app_a', file);
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(BridgeAlreadyRunningError);
+        expect((caught as BridgeAlreadyRunningError).holder).toBe('unknown');
+      } finally {
+        child.kill('SIGKILL');
+        await waitExit(child);
+      }
+    },
+  );
+
   it('pid 复用：POSIX 接管晚启动的进程，Windows 缺少启动时间时保守拒绝', async () => {
     const child = spawnSleeper();
     try {
@@ -191,4 +235,39 @@ describe('并发多进程抢锁', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 20_000);
+});
+
+describe('BridgeAlreadyRunningError 的提示语', () => {
+  it('macOS、持有者是 Vonvon Bot：说清是 Vonvon Bot 在用，不叫人 kill', () => {
+    const msg = new BridgeAlreadyRunningError(4242, 'vonvon-bot', 'darwin').message;
+    expect(msg).toContain('Vonvon Bot');
+    expect(msg).toContain('4242');
+    expect(msg).not.toMatch(/kill/);
+  });
+
+  // Vonvon Bot 对导入过的 bot 一直占着锁，只有「移除 Bot」才放；「停用」不放。提示说「停掉」会让人走不出去。
+  it('macOS、持有者是 Vonvon Bot：回到 bridge 要先「移除」Bot，只停用不行', () => {
+    const msg = new BridgeAlreadyRunningError(4242, 'vonvon-bot', 'darwin').message;
+    expect(msg).toContain('移除这个 Bot');
+    expect(msg).toContain('只停用不行');
+    expect(msg).not.toContain('停掉这个 bot');
+  });
+
+  it('macOS、认不出持有者：两种可能都说到，不叫人 kill', () => {
+    const msg = new BridgeAlreadyRunningError(4242, 'unknown', 'darwin').message;
+    expect(msg).toContain('PID 4242');
+    expect(msg).toContain('Vonvon Bot');
+    expect(msg).toContain('feishu-codex-bridge stop');
+    expect(msg).not.toMatch(/kill/);
+  });
+
+  it.each(['linux', 'win32'] as const)('%s：Vonvon Bot 只有 Mac 版，保持 0.6.14 的原话', (platform) => {
+    for (const holder of ['unknown', 'vonvon-bot'] as const) {
+      const msg = new BridgeAlreadyRunningError(4242, holder, platform).message;
+      expect(msg).toBe(
+        '另一个 bridge 进程已在运行 (PID 4242)。先停掉它（kill 4242）再启动——' +
+          '两个进程会抢同一 App 的卡片回调，导致按钮时灵时不灵。',
+      );
+    }
+  });
 });

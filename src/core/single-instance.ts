@@ -37,11 +37,29 @@ const PID_REUSE_SLACK_MS = 15_000;
  * 重抢，否则之后每次启动都空转重试后误报「稍后重试」。 */
 const EMPTY_LOCK_STALE_MS = 2_000;
 
+/** 锁的持有者是谁：Vonvon Bot（导入了这个 bot 之后它长期占着锁），或者认不出来。 */
+export type LockHolderKind = 'vonvon-bot' | 'unknown';
+
 export class BridgeAlreadyRunningError extends Error {
-  constructor(public readonly pid: number) {
+  constructor(
+    public readonly pid: number,
+    public readonly holder: LockHolderKind = 'unknown',
+    /** 仅测试注入；生产固定 process.platform。 */
+    platform: NodeJS.Platform = process.platform,
+  ) {
     super(
-      `另一个 bridge 进程已在运行 (PID ${pid})。先停掉它（kill ${pid}）再启动——` +
-        `两个进程会抢同一 App 的卡片回调，导致按钮时灵时不灵。`,
+      // Vonvon Bot 只有 Mac 版：Windows、Linux 上不会有它占锁，也不该看到它，保持 0.6.14 的原话。
+      platform !== 'darwin'
+        ? `另一个 bridge 进程已在运行 (PID ${pid})。先停掉它（kill ${pid}）再启动——` +
+            `两个进程会抢同一 App 的卡片回调，导致按钮时灵时不灵。`
+        : holder === 'vonvon-bot'
+          ? `这个 bot 正在由 Vonvon Bot 使用（PID ${pid}）。两个程序连同一个飞书应用会抢卡片回调，` +
+            `按钮会时灵时不灵，所以 bridge 不能同时运行。请在 Vonvon Bot 里使用它，不要结束这个进程；` +
+            `确实要回到 bridge，先在 Vonvon Bot 里移除这个 Bot（只停用不行，Vonvon Bot 仍会占着它）。`
+          : `另一个进程已在使用这个 bot（PID ${pid}）。两个进程连同一个飞书应用会抢卡片回调，` +
+            `按钮会时灵时不灵，所以不能同时运行。如果这个 bot 已经导入 Vonvon Bot，那就是 Vonvon Bot 在用，` +
+            `请在 Vonvon Bot 里使用，不要结束这个进程；否则请先停掉另一个 bridge` +
+            `（后台服务用 \`feishu-codex-bridge stop\`，前台运行的在它的终端按 Ctrl+C），再启动。`,
     );
     this.name = 'BridgeAlreadyRunningError';
   }
@@ -74,6 +92,27 @@ function processStartMs(pid: number): number | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** `ps -o command=` 取进程的完整命令行。拿不到（Windows / ps 失败）返回 undefined。 */
+function processCommand(pid: number): string | undefined {
+  if (process.platform === 'win32') return undefined;
+  try {
+    const r = spawnProcessSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+    if (r.status !== 0) return undefined;
+    return String(r.stdout).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 持有者是不是 Vonvon Bot：看进程命令行。Vonvon Bot 的 daemon 路径里带 vonvon（应用包、
+ * 数据目录），bridge 自己的命令行带 feishu-codex-bridge；两者都带（bridge 装在含 vonvon 的
+ * 目录里）就不下结论。认不出来按 unknown，提示里两种可能都说到，不叫人直接 kill。 */
+function classifyHolder(pid: number): LockHolderKind {
+  const command = processCommand(pid);
+  if (command && /vonvon/i.test(command) && !/feishu-codex-bridge/i.test(command)) return 'vonvon-bot';
+  return 'unknown';
 }
 
 /** 锁记录指向一个「活的同 app 持有者」吗？pid 复用缓解：锁是持有者启动后才写
@@ -159,7 +198,7 @@ export function acquireSingleInstanceLock(appId: string, file: string = paths.pr
           `确认没有其他 bridge 进程在跑后，手动删除该文件再重试。`,
       );
     }
-    if (isLiveHolder(rec, appId)) throw new BridgeAlreadyRunningError(rec.pid!);
+    if (isLiveHolder(rec, appId)) throw new BridgeAlreadyRunningError(rec.pid!, classifyHolder(rec.pid!));
     // 残留锁（持有者已死 / pid 被无关进程复用 / 其他 app 的旧记录）→ 摘掉后回到
     // 循环顶用 wx 重抢；两个进程同时清残留时，恰一个抢到，另一个下一轮读到新
     // 活体记录后被正常拒绝。
