@@ -34,6 +34,13 @@ export type PermissionMode = 'qa' | 'write' | 'full';
  * read this ONE constant instead of each carrying its own `?? 'write'`. */
 export const DEFAULT_PERMISSION_MODE: PermissionMode = 'write';
 
+/** A native skill attached to every turn on a thread. Codex app-server accepts
+ * this as a `UserInput` item; backends without native skill input may ignore it. */
+export interface AgentSkill {
+  name: string;
+  path: string;
+}
+
 export interface AgentInput {
   text?: string;
   /** absolute local paths of images the user sent — codex reads them directly as
@@ -241,8 +248,27 @@ export interface AgentThread {
   close(): Promise<void>;
 }
 
+/** A shell command codex wants to run while the thread is under a write gate. */
+export interface CommandApprovalRequest {
+  command: string;
+  cwd?: string;
+  /** the (parent) thread this command belongs to — its AgentThread.sessionId */
+  threadId: string;
+}
+
+/** Decides one command: resolve true to run it, false to refuse. The signal
+ * aborts when codex withdraws the request (turn interrupted / process exit). */
+export type CommandApprover = (req: CommandApprovalRequest, signal: AbortSignal) => Promise<boolean>;
+
 export interface StartThreadOptions {
   cwd: string;
+  /** Route every command through this approver (codex approvalPolicy
+   * 'untrusted'). Unset → approvalPolicy 'never', the historical behavior. */
+  commandApprover?: CommandApprover;
+  /** Extra developer guidance appended to the bridge instructions. */
+  extraInstructions?: string;
+  /** Native skills attached to every turn on this thread. */
+  skills?: AgentSkill[];
   model?: string;
   effort?: ReasoningEffort;
   /** permission tier; undefined → 'full' (preserves legacy danger-full-access) */

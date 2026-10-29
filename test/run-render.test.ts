@@ -264,16 +264,17 @@ describe('buildRunCard — terminal collapse', () => {
     ]);
 
   it('folds process into one collapsed panel and surfaces only the final answer', () => {
-    const card = buildRunCard({ rs: fullRun() });
+    const card = buildRunCard({ rs: fullRun(), progressTitle: '核对执行结果' });
     const els = bodyEls(card);
     expect(els).toHaveLength(2);
 
     const [panel, answer] = els;
-    // first element: a single collapsed process panel holding reasoning + tools + preamble
+    // first element: a single collapsed process panel holding the title + tools + preamble
     expect(panel!.tag).toBe('collapsible_panel');
     expect(panel!.expanded).toBe(false);
     const panelJson = JSON.stringify(panel);
-    expect(panelJson).toContain('pondering');
+    expect(panelJson).not.toContain('pondering');
+    expect(panelJson).toContain('核对执行结果');
     expect(panelJson).toContain('preamble msg');
     expect(panelJson).toContain('echo hi');
     // the final answer must NOT be inside the folded panel
@@ -336,6 +337,66 @@ describe('buildRunCard — terminal collapse', () => {
     const els = bodyEls(buildRunCard({ rs }));
     expect(els.some((e) => e.tag === 'collapsible_panel')).toBe(true);
     expect(JSON.stringify(els)).toContain('未返回内容');
+  });
+});
+
+describe('buildRunCard — reply mentions this turn sender', () => {
+  const running = (): RunState => run([{ type: 'text_delta', itemId: 'a', delta: 'working…' }]);
+  const done = (text = 'done'): RunState =>
+    run([{ type: 'text', itemId: 'a', text }, { type: 'done', turnId: 'turn-1' }]);
+  const mention = (id: string): string => `<at id=${id}></at>`;
+
+  it('mentions the current sender on running and terminal cards', () => {
+    for (const rs of [running(), done()]) {
+      const json = JSON.stringify(buildRunCard({ rs, requesterOpenId: 'ou_second' }));
+      expect(json).toContain(mention('ou_second'));
+      expect(json).not.toContain(mention('ou_first'));
+    }
+  });
+
+  it('still mentions the sender on a terminal card with no answer', () => {
+    const rs = run([
+      { type: 'tool_use', itemId: 't1', title: 'only tool' },
+      { type: 'tool_result', itemId: 't1', exitCode: 0 },
+      { type: 'done', turnId: 'turn-1' },
+    ]);
+    expect(JSON.stringify(buildRunCard({ rs, requesterOpenId: 'ou_second' })))
+      .toContain(mention('ou_second'));
+  });
+
+  it('does not mention anyone without a sender id', () => {
+    expect(JSON.stringify(buildRunCard({ rs: done() }))).not.toContain('<at id=');
+  });
+
+  it('does not duplicate a mention already opening the answer', () => {
+    for (const answer of [
+      `${mention('ou_second')} 已完成`,
+      `<at id="ou_second"></at> 已完成`,
+      `  ${mention('ou_second')} 已完成`,
+    ]) {
+      const content = bodyEls(buildRunCard({ rs: done(answer), requesterOpenId: 'ou_second' }))
+        .map((e) => String(e.content ?? ''))
+        .join('\n');
+      expect(content.match(/<at id=["']?ou_second["']?><\/at>/g) ?? []).toHaveLength(1);
+    }
+  });
+
+  it('adds the sender even if the answer mentions someone else', () => {
+    const card = buildRunCard({
+      rs: done(`${mention('ou_first')} 请看结果`),
+      requesterOpenId: 'ou_second',
+    });
+    expect(JSON.stringify(card)).toContain(mention('ou_first'));
+    expect(JSON.stringify(card)).toContain(mention('ou_second'));
+  });
+
+  it('applies the same sender rule to goal cards', () => {
+    expect(JSON.stringify(buildRunCard({
+      rs: running(),
+      cardKey: 'g1',
+      goalControls: true,
+      requesterOpenId: 'ou_second',
+    }))).toContain(mention('ou_second'));
   });
 });
 

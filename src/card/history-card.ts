@@ -31,7 +31,6 @@ export interface HistoryCardState {
 // transcript is a digest, not a full replay (codex keeps the real context).
 const USER_MAX = 300;
 const ASSIST_MAX = 800;
-const REASON_MAX = 600;
 const TOOL_TITLE_MAX = 90;
 const TOOLS_BODY_MAX = 700;
 const TOOLS_MAX_LINES = 12;
@@ -141,7 +140,6 @@ function turnBody(turn: HistoryTurn): CardElement[] {
   }
 
   const detail: CardElement[] = [];
-  if (turn.reasoning.trim()) detail.push(md(`🧠 **思考**\n${truncate(turn.reasoning, REASON_MAX)}`));
   if (turn.tools.length) detail.push(md(toolsBlock(turn.tools)));
   if (detail.length) {
     out.push(collapsiblePanelEl({ title: detailTitle(turn), expanded: false, border: 'blue', elements: detail }));
@@ -151,7 +149,6 @@ function turnBody(turn: HistoryTurn): CardElement[] {
 
 function detailTitle(turn: HistoryTurn): string {
   const parts: string[] = [];
-  if (turn.reasoning.trim()) parts.push('🧠 思考');
   if (turn.tools.length) parts.push(`🧰 ${turn.tools.length} 个工具`);
   return `🔎 ${parts.join(' · ')}`;
 }

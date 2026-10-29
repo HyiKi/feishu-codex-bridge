@@ -215,10 +215,14 @@ export function runElapsedMs(state: RunState, now = Date.now()): number | undefi
 export function processTitle(
   status: Terminal,
   elapsedMs?: number,
+  progressTitle?: string,
 ): string {
   const label = elapsedMs === undefined || !Number.isFinite(elapsedMs) ? '执行过程' : `${status === 'running' ? '已处理' : '用时'} ${formatElapsed(elapsedMs)}`;
   const suffix = status === 'interrupted' ? ' · 已停止' : status === 'idle_timeout' ? ' · 已超时' : status === 'error' ? ' · 失败' : '';
-  return `${status === 'error' ? '❌ ' : ''}${label}${suffix}`;
+  const activity = progressTitle?.replace(/\s+/gu, ' ').trim();
+  const lead = status === 'error' ? '❌ ' : status === 'running' && activity ? '⏳ ' : '';
+  const activityPrefix = activity ? `${activity} · ` : '';
+  return `${lead}${activityPrefix}${label}${suffix}`;
 }
 
 function formatElapsed(milliseconds: number): string {

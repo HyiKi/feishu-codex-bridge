@@ -76,6 +76,11 @@ export interface AppServerClientOptions {
   clientName?: string;
 }
 
+/** Answers a server-initiated JSON-RPC request (approvals). Resolve `undefined`
+ * to reply "method not found"; the signal aborts when codex resolves the request
+ * itself (turn interrupted) or the process exits. */
+export type ServerRequestHandler = (method: string, params: unknown, signal: AbortSignal) => Promise<unknown>;
+
 /**
  * One `codex app-server --listen stdio://` child process, speaking JSON-RPC 2.0
  * over newline-delimited JSON. One client = one thread/session (per design:
@@ -90,11 +95,25 @@ export class AppServerClient {
   private readonly notifications = new AsyncQueue<ServerNotification>();
   private closed = false;
   private hasExited = false;
+  private serverRequestHandler: ServerRequestHandler | undefined;
+  private readonly serverRequests = new Map<number | string, AbortController>();
 
   constructor(private readonly opts: AppServerClientOptions) {}
 
   get pid(): number | undefined {
     return this.child?.pid;
+  }
+
+  /** Install (or clear) the approval handler. Without one every server request
+   * is answered "method not found", the historical behavior under `never`. */
+  setServerRequestHandler(handler: ServerRequestHandler | undefined): void {
+    this.serverRequestHandler = handler;
+  }
+
+  /** true while an approval is waiting on a human; the run's idle watchdog reads
+   * this so a long wait for a card click is not mistaken for a wedged turn. */
+  get hasPendingServerRequests(): boolean {
+    return this.serverRequests.size > 0;
   }
 
   /** true once the child process has exited (crash or close) — the client is
@@ -129,6 +148,7 @@ export class AppServerClient {
       // writing into a broken pipe (and isAlive() reports the truth).
       this.hasExited = true;
       this.closed = true;
+      for (const ctrl of this.serverRequests.values()) ctrl.abort();
       this.failAllPending(new Error(`app-server exited (code=${code} signal=${signal})`));
       this.notifications.close();
     });
@@ -271,18 +291,48 @@ export class AppServerClient {
     }
 
     // server-initiated request (e.g. approval). With approvalPolicy:never these
-    // shouldn't arrive, but reply method-not-found so the server never blocks.
-    if (typeof msg.id === 'number' && typeof msg.method === 'string') {
-      this.child?.stdin.write(
-        `${JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'not handled' } })}\n`,
-      );
+    // shouldn't arrive, so unless a handler is installed reply method-not-found
+    // and the server never blocks.
+    if ((typeof msg.id === 'number' || typeof msg.id === 'string') && typeof msg.method === 'string') {
+      this.handleServerRequest(msg.id, msg.method, msg.params);
       return;
     }
 
     // notification
     if (typeof msg.method === 'string') {
+      if (msg.method === 'serverRequest/resolved') {
+        const requestId = (msg.params as { requestId?: number | string } | undefined)?.requestId;
+        if (requestId !== undefined) this.serverRequests.get(requestId)?.abort();
+      }
       this.notifications.push(msg as unknown as ServerNotification);
     }
+  }
+
+  private respond(id: number | string, payload: { result: unknown } | { error: { code: number; message: string } }): void {
+    if (this.hasExited || !this.child?.stdin.writable) return;
+    this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, ...payload })}\n`);
+  }
+
+  private handleServerRequest(id: number | string, method: string, params: unknown): void {
+    const handler = this.serverRequestHandler;
+    if (!handler) {
+      this.respond(id, { error: { code: -32601, message: 'not handled' } });
+      return;
+    }
+    const ctrl = new AbortController();
+    this.serverRequests.set(id, ctrl);
+    void (async () => {
+      try {
+        const result = await handler(method, params, ctrl.signal);
+        if (result === undefined) this.respond(id, { error: { code: -32601, message: 'not handled' } });
+        else this.respond(id, { result });
+      } catch (err) {
+        log.fail('agent', err, { phase: 'server-request', method });
+        this.respond(id, { error: { code: -32603, message: 'approval handler failed' } });
+      } finally {
+        this.serverRequests.delete(id);
+      }
+    })();
   }
 
   private failAllPending(err: Error): void {

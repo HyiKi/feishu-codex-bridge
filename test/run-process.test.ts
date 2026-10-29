@@ -26,6 +26,17 @@ describe('ordered run process', () => {
     expect(body.elements[1]).toMatchObject({ tag: 'markdown', element_id: 'answer', content: 'ANSWER', text_size: 'normal' });
   });
 
+  it('never renders reasoning text and uses the sidecar Chinese title', () => {
+    let state = reduce(initialState, { type: 'thinking_delta', itemId: 'r1', delta: 'PRIVATE_DELTA' });
+    state = reduce(state, { type: 'thinking', itemId: 'r1', text: 'PRIVATE_REASONING' });
+    state = reduce(state, { type: 'tool_use', itemId: 't1', title: 'pwd', kind: 'command' });
+    const card = buildRunCard({ rs: state, progressTitle: '检查当前目录' });
+    const json = JSON.stringify(card);
+    expect(json).not.toContain('PRIVATE_DELTA');
+    expect(json).not.toContain('PRIVATE_REASONING');
+    expect(json).toContain('检查当前目录');
+  });
+
   it('uses a live elapsed clock and freezes the duration at completion', () => {
     vi.useFakeTimers(); vi.setSystemTime(1000);
     const render = new RunRender();

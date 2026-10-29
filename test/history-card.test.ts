@@ -64,10 +64,10 @@ describe('buildHistoryCard', () => {
   });
 
   it('stays under Feishu ~30KB and degrades oldest turns when history is large', () => {
-    const turns: HistoryTurn[] = Array.from({ length: 10 }, (_, i) =>
-      turn({ userText: `第${i}个问题 `.repeat(40), assistantText: 'A'.repeat(2000), reasoning: 'R'.repeat(2000) }),
+    const turns: HistoryTurn[] = Array.from({ length: 30 }, (_, i) =>
+      turn({ userText: `第${i}个问题 `.repeat(40), assistantText: 'A'.repeat(4000), reasoning: 'R'.repeat(2000) }),
     );
-    const card = buildHistoryCard({ cwd: '/x', history: { turns, totalTurns: 10 } });
+    const card = buildHistoryCard({ cwd: '/x', history: { turns, totalTurns: 30 } });
     const json = JSON.stringify(card);
     expect(json.length).toBeLessThan(30_000); // hard Feishu limit
     expect(json).toContain('内容已省略'); // oldest turns degraded to title-only
@@ -82,5 +82,24 @@ describe('buildHistoryCard', () => {
     const json = JSON.stringify(card);
     expect(json).toContain('会话已恢复');
     expect(json).toContain('还没有可显示的历史');
+  });
+
+  it('never renders stored reasoning text', () => {
+    const card = buildHistoryCard({
+      cwd: '/x',
+      history: {
+        turns: [turn({
+          userText: '检查一下',
+          assistantText: '已完成',
+          reasoning: 'PRIVATE_HISTORY_REASONING',
+          tools: [{ title: 'pwd', exitCode: 0 }],
+        })],
+        totalTurns: 1,
+      },
+    });
+    const json = JSON.stringify(card);
+    expect(json).not.toContain('PRIVATE_HISTORY_REASONING');
+    expect(json).not.toContain('🧠');
+    expect(json).toContain('🧰');
   });
 });

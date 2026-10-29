@@ -351,6 +351,7 @@ export class ClaudeAgentBackend implements AgentBackend {
   }
 
   async startThread(opts: StartThreadOptions): Promise<AgentThread> {
+    if (opts.commandApprover) throw new Error('写操作门禁目前只支持 Codex 后端，已拒绝启动（不会降级为无门禁）');
     const sdk = await this.sdkLoader();
     return new ClaudeAgentThread({
       sessionId: randomUUID(),
@@ -367,6 +368,7 @@ export class ClaudeAgentBackend implements AgentBackend {
   }
 
   async resumeThread(opts: ResumeThreadOptions): Promise<AgentThread> {
+    if (opts.commandApprover) throw new Error('写操作门禁目前只支持 Codex 后端，已拒绝启动（不会降级为无门禁）');
     const sdk = await this.sdkLoader();
     return new ClaudeAgentThread({
       sessionId: opts.sessionId,

@@ -50,6 +50,15 @@ export interface Project {
    * bridge pushes codex's auto-compact token limit past any real usage to disable
    * it (see backend sandboxParams / AUTO_COMPACT_OFF_LIMIT). */
   autoCompact?: boolean;
+  /** ERP write gate: every shell command the agent runs is classified, and ones
+   * that look like an ERP write (DMS change order, DB DML, HTTP write, ...) wait
+   * for an admin to approve them on a Feishu card, with no time limit.
+   * Codex backend only. */
+  writeGate?: boolean;
+  /** Per-turn clarification policy: attach the grilling skill to every turn and
+   * ask before acting when a task has side effects or unresolved decisions.
+   * Prompt-level only; the write gate remains the hard boundary. Codex only. */
+  clarifyBeforeAct?: boolean;
   /** agent backend id for this project (see src/agent/index.ts registry).
    * Omitted on old/normal data → the codex default (DEFAULT_BACKEND_ID — historical path,
    * zero behavior change). Routed per project in createOrchestrator's

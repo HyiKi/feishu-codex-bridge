@@ -4,8 +4,10 @@ import type {
   AgentEvent,
   AgentInput,
   AgentRun,
+  AgentSkill,
   AgentThread,
   BackendProbe,
+  CommandApprover,
   CompactResult,
   GenerateSessionTitleOptions,
   HistoryTool,
@@ -28,6 +30,29 @@ import { codexVersionAsync, resolveCodexBin } from './locate';
 import type { ServerNotification, Thread, ThreadItem, Turn, TurnStartResponse } from './protocol';
 
 const APPROVAL_POLICY = 'never';
+const GATED_APPROVAL_POLICY = 'untrusted';
+
+function instructionsFor(extra: string | undefined): string {
+  return extra ? `${BRIDGE_DEVELOPER_INSTRUCTIONS}\n\n${extra}` : BRIDGE_DEVELOPER_INSTRUCTIONS;
+}
+
+/** Wire a thread's command approvals to its approver. Only command execution is
+ * decided by a human/gate; file edits are accepted so `untrusted` does not stall
+ * ordinary work. Anything else keeps the historical "not handled" reply. */
+function installApprovalHandler(
+  client: AppServerClient,
+  threadId: string,
+  approver: CommandApprover | undefined,
+): void {
+  if (!approver) return;
+  client.setServerRequestHandler(async (method, params, signal) => {
+    if (method === 'item/fileChange/requestApproval') return { decision: 'accept' };
+    if (method !== 'item/commandExecution/requestApproval') return undefined;
+    const p = params as { command?: string | null; cwd?: string | null };
+    const ok = await approver({ command: p.command ?? '', cwd: p.cwd ?? undefined, threadId }, signal);
+    return { decision: ok ? 'accept' : 'decline' };
+  });
+}
 
 /**
  * Map a permission tier to the thread/start|resume params that enforce it.
@@ -115,10 +140,11 @@ const TITLE_OUTPUT_SCHEMA = {
   additionalProperties: false,
 } as const;
 
-function toUserInput(input: AgentInput): unknown[] {
+function toUserInput(input: AgentInput, skills: readonly AgentSkill[] = []): unknown[] {
   const out: unknown[] = [];
   if (input.text) out.push({ type: 'text', text: input.text, text_elements: [] });
   for (const path of input.images ?? []) out.push({ type: 'localImage', path });
+  for (const skill of skills) out.push({ type: 'skill', name: skill.name, path: skill.path });
   return out;
 }
 
@@ -202,52 +228,56 @@ export async function generateCodexSessionTitleWithClient(
   const deltas = new Map<string, string>();
   let nextNotification = iterator.next().then((step) => ({ kind: 'notification' as const, step }));
 
-  while (true) {
-    const next = await Promise.race(
-      startState ? [nextNotification, startState] : [nextNotification],
-    );
-    if (next.kind === 'start-error') throw next.error;
-    if (next.kind === 'start-ok') {
-      startState = null;
-      continue;
-    }
-    if (next.step.done) throw new Error('Codex title stream closed before turn completion');
+  try {
+    while (true) {
+      const next = await Promise.race(
+        startState ? [nextNotification, startState] : [nextNotification],
+      );
+      if (next.kind === 'start-error') throw next.error;
+      if (next.kind === 'start-ok') {
+        startState = null;
+        continue;
+      }
+      if (next.step.done) throw new Error('Codex title stream closed before turn completion');
 
-    const n = next.step.value;
-    nextNotification = iterator.next().then((step) => ({ kind: 'notification' as const, step }));
-    switch (n.method) {
-      case 'turn/started':
-        if (n.params.threadId === threadId) turnId = n.params.turn.id;
-        break;
-      case 'item/agentMessage/delta':
-        if (n.params.threadId === threadId && (!turnId || n.params.turnId === turnId)) {
-          deltas.set(n.params.itemId, (deltas.get(n.params.itemId) ?? '') + n.params.delta);
-        }
-        break;
-      case 'item/completed':
-        if (
-          n.params.threadId === threadId &&
-          (!turnId || n.params.turnId === turnId) &&
-          n.params.item.type === 'agentMessage'
-        ) {
-          finalText = n.params.item.text;
-        }
-        break;
-      case 'turn/completed':
-        if (n.params.threadId !== threadId || (turnId && n.params.turn.id !== turnId)) break;
-        if (n.params.turn.status !== 'completed') {
-          throw new Error(
-            n.params.turn.error?.message ?? `Codex title turn ended with ${n.params.turn.status}`,
-          );
-        }
-        if (!finalText) finalText = [...deltas.values()].join('');
-        return parseGeneratedTitle(finalText);
-      case 'error':
-        if (!n.params.willRetry) throw new Error(n.params.error.message);
-        break;
-      default:
-        break;
+      const n = next.step.value;
+      nextNotification = iterator.next().then((step) => ({ kind: 'notification' as const, step }));
+      switch (n.method) {
+        case 'turn/started':
+          if (n.params.threadId === threadId) turnId = n.params.turn.id;
+          break;
+        case 'item/agentMessage/delta':
+          if (n.params.threadId === threadId && (!turnId || n.params.turnId === turnId)) {
+            deltas.set(n.params.itemId, (deltas.get(n.params.itemId) ?? '') + n.params.delta);
+          }
+          break;
+        case 'item/completed':
+          if (
+            n.params.threadId === threadId &&
+            (!turnId || n.params.turnId === turnId) &&
+            n.params.item.type === 'agentMessage'
+          ) {
+            finalText = n.params.item.text;
+          }
+          break;
+        case 'turn/completed':
+          if (n.params.threadId !== threadId || (turnId && n.params.turn.id !== turnId)) break;
+          if (n.params.turn.status !== 'completed') {
+            throw new Error(
+              n.params.turn.error?.message ?? `Codex title turn ended with ${n.params.turn.status}`,
+            );
+          }
+          if (!finalText) finalText = [...deltas.values()].join('');
+          return parseGeneratedTitle(finalText);
+        case 'error':
+          if (!n.params.willRetry) throw new Error(n.params.error.message);
+          break;
+        default:
+          break;
+      }
     }
+  } finally {
+    await iterator.return?.();
   }
 }
 
@@ -278,6 +308,7 @@ class CodexThread implements AgentThread {
     readonly sessionId: string,
     private model: string | undefined,
     private effort: ReasoningEffort | undefined,
+    private readonly skills: readonly AgentSkill[] = [],
   ) {}
 
   runStreamed(input: AgentInput, turn?: TurnOptions): AgentRun {
@@ -292,7 +323,7 @@ class CodexThread implements AgentThread {
     let lastActivityAt = Date.now();
     const params: Record<string, unknown> = {
       threadId: self.sessionId,
-      input: toUserInput(input),
+      input: toUserInput(input, self.skills),
     };
     if (self.model) params.model = self.model;
     if (self.effort) params.effort = self.effort;
@@ -351,7 +382,7 @@ class CodexThread implements AgentThread {
         activeTurnId = undefined;
       }
     }
-    return { events: gen(), turnId: () => activeTurnId, lastActivity: () => lastActivityAt };
+    return { events: gen(), turnId: () => activeTurnId, lastActivity: () => (self.client.hasPendingServerRequests ? Date.now() : lastActivityAt) };
   }
 
   runGoal(objective: string): AgentRun {
@@ -446,7 +477,7 @@ class CodexThread implements AgentThread {
         self.currentTurnId = undefined;
       }
     }
-    return { events: gen(), turnId: () => self.currentTurnId, lastActivity: () => lastActivityAt };
+    return { events: gen(), turnId: () => self.currentTurnId, lastActivity: () => (self.client.hasPendingServerRequests ? Date.now() : lastActivityAt) };
   }
 
   async clearGoal(): Promise<void> {
@@ -457,7 +488,7 @@ class CodexThread implements AgentThread {
     await this.client.request('turn/steer', {
       threadId: this.sessionId,
       expectedTurnId,
-      input: toUserInput(input),
+      input: toUserInput(input, this.skills),
     }, 30_000);
   }
 
@@ -670,12 +701,13 @@ export class CodexAppServerBackend implements AgentBackend {
     const client = await this.spawn(opts.cwd);
     const res = await client.request<{ thread: { id: string } }>('thread/start', {
       cwd: opts.cwd,
-      approvalPolicy: APPROVAL_POLICY,
+      approvalPolicy: opts.commandApprover ? GATED_APPROVAL_POLICY : APPROVAL_POLICY,
       ...sandbox,
-      developerInstructions: BRIDGE_DEVELOPER_INSTRUCTIONS,
+      developerInstructions: instructionsFor(opts.extraInstructions),
       ...(opts.model ? { model: opts.model } : {}),
     });
-    return new CodexThread(client, res.thread.id, opts.model, opts.effort);
+    installApprovalHandler(client, res.thread.id, opts.commandApprover);
+    return new CodexThread(client, res.thread.id, opts.model, opts.effort, opts.skills);
   }
 
   async resumeThread(opts: ResumeThreadOptions): Promise<AgentThread> {
@@ -684,12 +716,13 @@ export class CodexAppServerBackend implements AgentBackend {
     const res = await client.request<{ thread: { id: string } }>('thread/resume', {
       threadId: opts.sessionId,
       cwd: opts.cwd,
-      approvalPolicy: APPROVAL_POLICY,
+      approvalPolicy: opts.commandApprover ? GATED_APPROVAL_POLICY : APPROVAL_POLICY,
       ...sandbox,
-      developerInstructions: BRIDGE_DEVELOPER_INSTRUCTIONS,
+      developerInstructions: instructionsFor(opts.extraInstructions),
       ...(opts.model ? { model: opts.model } : {}),
     });
-    return new CodexThread(client, res.thread.id, opts.model, opts.effort);
+    installApprovalHandler(client, res.thread.id, opts.commandApprover);
+    return new CodexThread(client, res.thread.id, opts.model, opts.effort, opts.skills);
   }
 
   private async spawn(cwd: string): Promise<AppServerClient> {

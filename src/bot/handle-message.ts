@@ -1,3 +1,4 @@
+import { tmpdir } from 'node:os';
 import { registerVoiceConsole } from './voice-console';
 import { createVoiceService } from '../voice/service';
 import { ingestVoice, createIntakeQueue, type IngestedContext } from '../voice/inbound';
@@ -5,6 +6,12 @@ import type { VoiceReply } from '../voice/types';
 import { steerWithDeadline, isRejectedSteer } from './steer-delivery';
 import { TurnCardEvents, type SteerCardEvent } from './turn-card-events';
 import { runSegment } from '../card/run-segment';
+import {
+  buildProgressTitlePrompt,
+  ProgressTitleController,
+  type ProgressTitleGenerator,
+} from './progress-title';
+import { CodexProgressTitleWorker } from '../agent/codex-appserver/progress-title-worker';
 import type {
   BotAddedEvent,
   CardActionEvent,
@@ -25,6 +32,7 @@ import {
   type ModelInfo,
   type PermissionMode,
   type ReasoningEffort,
+  type StartThreadOptions,
 } from '../agent/types';
 import type { SelectOption } from '../card/cards';
 import {
@@ -40,6 +48,7 @@ import {
   type AdminWriteOp,
 } from '../admin/ops';
 import { isGoalTerminal, UsageError } from '../agent/types';
+import { CLARIFY_BEFORE_ACT_INSTRUCTIONS, GRILLING_SKILL } from '../agent/bridge-instructions';
 import {
   getMaxConcurrentRuns,
   getPendingPolicy,
@@ -179,6 +188,7 @@ import { bridgeVersion } from '../core/version';
 import { webConsoleUrl } from '../web/discovery';
 import { paths } from '../config/paths';
 import { OutboundFiles } from './outbound-files';
+import { WRITE_GATE_INSTRUCTIONS, WriteGate, type WriteGateApproval, type WriteGateRunContext } from './write-gate';
 import { getSecret } from '../config/keystore';
 import { buildScopeGrantUrl, JOIN_GROUP_SCOPES } from '../config/scopes';
 import { validateAppCredentials } from '../utils/feishu-auth';
@@ -423,6 +433,8 @@ export interface QueuedTurn {
   requestedAt: number;
   /** Clean user-authored label; never derive reminder copy from woven input. */
   summary?: string;
+  /** False for a synthetic approval continuation; see WriteGateRunContext. */
+  allowAdminWriteBypass?: boolean;
 }
 
 /** Switch the mutable session control state to a queued follow-up. Exported as
@@ -638,9 +650,11 @@ export function cardIdFromMessageContent(content: string): string | undefined {
 
 // ── M-3 空闲进程 reaper 参数 ─────────────────────────────────────────
 /** 超过这个时长没有任何轮次的 LIVE 会话进程被回收（close + 驱逐缓存）。持久化
- * 记录保留，下一条消息经 resolveThread 的 resume 兜底自愈（~250ms–1.6s），对话
- * 无感衔接。synthesis 给的区间 30–60min，取中值。 */
-const SESSION_REAP_IDLE_MS = 45 * 60_000;
+ * 记录保留，下一条消息经 resolveThread 的 resume 自愈。实测大会话冷恢复要
+ * 30–80s（rollout 数 MB 起），所以放宽到 2 小时，让连续对话尽量命中热会话。 */
+const SESSION_REAP_IDLE_MS = 2 * 60 * 60_000;
+/** 无论空闲多久都保留的最近活跃会话数（热会话兜底）。 */
+const SESSION_REAP_KEEP_RECENT = 2;
 /** reaper 清扫周期。 */
 const SESSION_REAP_SWEEP_MS = 5 * 60_000;
 
@@ -648,6 +662,7 @@ const SESSION_REAP_SWEEP_MS = 5 * 60_000;
  * M-3 空闲进程 reaper 的纯决策：从 LIVE 会话 key 里挑出可回收的 —— 跳过 busy
  * 的（运行/排队中的 active、评论串行链的 docLocks）与最近 idleMs 内有过轮次
  * （touchedAt 打点）的；没有打点的 key 不回收（调用方先补记，下一轮再评估）。
+ * keepRecent > 0 时，打点最新的 keepRecent 个会话即使超时也保留。
  */
 export function pickIdleSessions(
   keys: Iterable<string>,
@@ -655,10 +670,20 @@ export function pickIdleSessions(
   isBusy: (key: string) => boolean,
   idleMs: number,
   now: number,
+  keepRecent = 0,
 ): string[] {
+  const keyList = [...keys];
+  const protectedKeys = new Set<string>(
+    keepRecent > 0
+      ? keyList
+          .filter((key) => touchedAt.has(key))
+          .sort((a, b) => (touchedAt.get(b) ?? 0) - (touchedAt.get(a) ?? 0))
+          .slice(0, keepRecent)
+      : [],
+  );
   const out: string[] = [];
-  for (const key of keys) {
-    if (isBusy(key)) continue;
+  for (const key of keyList) {
+    if (isBusy(key) || protectedKeys.has(key)) continue;
     const at = touchedAt.get(key);
     if (at === undefined || now - at < idleMs) continue;
     out.push(key);
@@ -709,6 +734,7 @@ export function createOrchestrator(
    * using it directly — identical to the pre-registry behavior. */
   const backend = backendFor();
   const sessionTitles = new SessionTitleCoordinator({ backendFor: (id) => backendFor(id) });
+  const progressTitleWorker = new CodexProgressTitleWorker();
 
   /** Snapshot the selected backend's title policy when its native session is
    * created. Later DM-setting changes affect future sessions only. */
@@ -717,6 +743,45 @@ export function createOrchestrator(
     return selected.enabled
       ? { strategy: 'model', model: selected.model, effort: selected.effort }
       : { strategy: 'truncate' };
+  }
+
+  /** Build the non-blocking action-title sidecar for one run. Reasoning is
+   * private input only; the card receives just the short Chinese title. */
+  function createProgressTitleController(
+    backendId: string | undefined,
+    goal: string,
+    fallbackModel: string | undefined,
+    onChange: (title: string) => void,
+  ): ProgressTitleController {
+    const selectedBackend = backendFor(backendId);
+    const policy = sessionTitlePolicy(selectedBackend.id);
+    const model = policy.strategy === 'model' ? policy.model : fallbackModel;
+    const effort = policy.strategy === 'model' ? policy.effort as ReasoningEffort : 'low';
+    let generate: ProgressTitleGenerator | undefined;
+    if (model && selectedBackend.id === DEFAULT_BACKEND_ID) {
+      void progressTitleWorker.prepare().catch((err) =>
+        log.fail('agent', err, { phase: 'progress-title-prewarm' }),
+      );
+      generate = (input) => progressTitleWorker.generate({
+        cwd: tmpdir(),
+        prompt: buildProgressTitlePrompt(input),
+        model,
+        effort,
+      });
+    } else if (model && selectedBackend.generateSessionTitle) {
+      generate = (input) => selectedBackend.generateSessionTitle!({
+        cwd: tmpdir(),
+        prompt: buildProgressTitlePrompt(input),
+        model,
+        effort,
+      });
+    }
+    return new ProgressTitleController({
+      goal,
+      generate,
+      onChange,
+      onError: (err) => log.fail('agent', err, { phase: 'progress-title', backend: selectedBackend.id }),
+    });
   }
 
   /** Title bookkeeping is auxiliary: disk/backend failures never block the
@@ -1193,6 +1258,75 @@ export function createOrchestrator(
     });
   }
 
+  // ── ERP write gate ────────────────────────────────────────────────
+  // Per-run posting context, keyed by the codex thread id; looked up per command
+  // so a long-lived thread always posts approvals under the run that is live now.
+  const gateRuns = new Map<string, WriteGateRunContext>();
+  // Bridge-generated turns can carry an admin sender without being initiated by
+  // that admin. Keep those out of the admin write bypass (approval continuation).
+  const noAdminWriteBypass = new WeakSet<NormalizedMessage>();
+  const writeGate = new WriteGate({
+    channel,
+    isAdmin: (openId) => isAdmin(cfg, openId),
+    adminOpenIds: () => [...new Set([resolveOwner(cfg), ...(cfg.preferences?.access?.admins ?? [])].filter((id): id is string => Boolean(id)))],
+    isChatAllowed: (chatId) => isChatAllowed(cfg, chatId),
+    onApproved: (approval) => continueAfterApproval(approval),
+  });
+  /** An admin approved a gated command: hand the agent a message in the same
+   * session so it runs that exact command once (the one-time grant is already set). */
+  async function continueAfterApproval(approval: WriteGateApproval): Promise<void> {
+    const key = approval.sessionKey;
+    const reply = (markdown: string): Promise<void> =>
+      channel
+        .send(approval.chatId, { markdown }, { replyTo: approval.cardMessageId, replyInThread: approval.replyInThread })
+        .then(() => undefined, () => undefined);
+    if (!key || key.startsWith('pending:') || !approval.cardMessageId) {
+      await reply('✅ 已批准，但原会话已经结束，请 @机器人 让它重新发起这项操作。');
+      return;
+    }
+    const project = await getProjectByChatId(approval.chatId);
+    if (!project || !isChatAllowed(cfg, approval.chatId)) return;
+    const flat = (project.kind ?? 'multi') === 'single';
+    const text = [
+      `管理员 <at id=${approval.approverOpenId}></at> 已批准你刚才被门禁拦下的写操作。请原样执行下面这条命令一次，不要修改，执行后汇报结果：`,
+      '```',
+      approval.command,
+      '```',
+    ].join('\n');
+    const synthetic: NormalizedMessage = {
+      messageId: approval.cardMessageId,
+      chatId: approval.chatId,
+      chatType: 'group',
+      senderId: approval.approverOpenId,
+      content: text,
+      rawContentType: 'text',
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: true,
+      threadId: flat ? undefined : key.replace(/#(admin|guest)$/, ''),
+      createTime: Date.now(),
+    };
+    noAdminWriteBypass.add(synthetic);
+    log.info('write-gate', 'continue', { key });
+    await handleTurn(synthetic, text, key, flat, project, turnPerm(project, approval.requesterOpenId ?? approval.approverOpenId));
+  }
+  /** Thread-start options for the project's write gate and clarification policy. */
+  function projectAgentOptions(
+    project: Project | undefined,
+  ): Pick<StartThreadOptions, 'commandApprover' | 'extraInstructions' | 'skills'> {
+    const instructions: string[] = [];
+    if (project?.writeGate) instructions.push(WRITE_GATE_INSTRUCTIONS);
+    if (project?.clarifyBeforeAct) instructions.push(CLARIFY_BEFORE_ACT_INSTRUCTIONS);
+    return {
+      ...(project?.writeGate
+        ? { commandApprover: writeGate.approverFor((threadId) => gateRuns.get(threadId), project.cwd) }
+        : {}),
+      ...(instructions.length > 0 ? { extraInstructions: instructions.join('\n\n') } : {}),
+      ...(project?.clarifyBeforeAct ? { skills: [GRILLING_SKILL] } : {}),
+    };
+  }
+
   /** A turn's resolved permission, by sender role. `roleSuffix` is set only when
    * the project splits admin/guest tiers — then the session key is namespaced by
    * it so a guest never shares the admin thread (sandbox + codex history). */
@@ -1403,6 +1537,7 @@ export function createOrchestrator(
     const titleSource: SessionTitleSource = goal
       ? { text, rawContentType: 'text' }
       : sessionTitleSourceFromMessage(msg, summaryText ?? text);
+    const allowAdminWriteBypass = !noAdminWriteBypass.has(msg);
     const existing = active.get(sessionKey);
     if (existing) {
       // A goal can't co-run with (or queue behind) a turn on the same session —
@@ -1429,6 +1564,7 @@ export function createOrchestrator(
         requesterOpenId: msg.senderId,
         requestedAt: msg.createTime || Date.now(),
         summary: stripFileTokens(summaryText ?? text).slice(0, 80) || undefined,
+        allowAdminWriteBypass,
       });
       log.info('intake', 'queued', { depth: existing.queue.length });
       return;
@@ -1518,7 +1654,7 @@ export function createOrchestrator(
           // a fresh session bound to the resolved cwd, on the project's backend.
           const cwd = project?.cwd ?? fallbackCwd;
           const be = backendFor(project?.backend);
-          thread = await be.startThread({ cwd, model, effort, mode: perm.mode, network: perm.network, autoCompact: perm.autoCompact });
+          thread = await be.startThread({ cwd, model, effort, mode: perm.mode, network: perm.network, autoCompact: perm.autoCompact, ...projectAgentOptions(project) });
           trackSession(sessionKey, thread);
           // 自愈观测：来源=全新会话（无持久化记录），与 resume-ok/resume-recreate
           // 互斥——三者其一 + agent 层的 spawn/prewarm-hit 即可还原完整恢复路径。
@@ -1621,6 +1757,7 @@ export function createOrchestrator(
           summary: stripFileTokens(summaryText ?? text).slice(0, 80) || '(本轮任务)',
           requesterOpenId: msg.senderId,
           requestedAt: msg.createTime || tIntake,
+          allowAdminWriteBypass,
           // 编织完成 → turn/start 之间不再读盘：首轮直接用预取的会话记录
           // （新会话及旧单会话的缺失值由上面的 model/effort 补齐）。
           firstRec: prior ?? null,
@@ -1686,6 +1823,7 @@ export function createOrchestrator(
         mode: perm?.mode,
         network: perm?.network,
         autoCompact: perm?.autoCompact,
+        ...projectAgentOptions(project),
       });
       trackSession(threadId, resumed);
       // 自愈观测：resume 来源=持久化记录（区分「resume 自愈」与 LIVE 快路径的
@@ -1702,6 +1840,7 @@ export function createOrchestrator(
         mode: perm?.mode ?? project?.mode,
         network: perm?.network ?? project?.network,
         autoCompact: perm?.autoCompact ?? project?.autoCompact,
+        ...projectAgentOptions(project),
       });
       trackSession(threadId, fresh);
       // The resumed codex thread is gone — repoint the persisted record at the
@@ -1770,7 +1909,7 @@ export function createOrchestrator(
           model: project?.defaultModel,
           effort: project?.defaultEffort,
         });
-        const thread = await be.startThread({ cwd, model, effort, mode: perm.mode, network: perm.network, autoCompact: perm.autoCompact });
+        const thread = await be.startThread({ cwd, model, effort, mode: perm.mode, network: perm.network, autoCompact: perm.autoCompact, ...projectAgentOptions(project) });
         tResolveDone = Date.now();
         return { thread, model, effort };
       })();
@@ -2096,6 +2235,7 @@ export function createOrchestrator(
           mode: perm.mode,
           network: perm.network,
           autoCompact: perm.autoCompact,
+          ...projectAgentOptions(project),
         });
         // Close + evict the parked live thread (a separate app-server proc); its
         // on-disk session survives for /resume. Then track the fresh one.
@@ -2172,6 +2312,7 @@ export function createOrchestrator(
     return turnTier(project, isAdmin(cfg, openId)).mode;
   });
   cliBridge?.register(dispatcher);
+  writeGate.register(dispatcher);
   const PENDING_TTL_MS = 30 * 60_000; // abandoned config cards expire after 30 min
   // Goal runs have NO total wall-clock cap (a healthy goal may legitimately run
   // for days — matching codex's native behavior). The only automatic backstop is
@@ -4004,6 +4145,9 @@ export function createOrchestrator(
     summary?: string;
     /** who triggered this run (for ⏹/⚙️ ownership gating) */
     requesterOpenId?: string;
+    /** Whether a real admin sender may bypass the write gate. Defaults to true;
+     * synthetic approval continuations set false. */
+    allowAdminWriteBypass?: boolean;
     /** wall-clock origin for completion reminders; normally the inbound
      * message's createTime, so global/session queueing is included. */
     requestedAt?: number;
@@ -4131,11 +4275,21 @@ export function createOrchestrator(
     if (opts.requesterOpenId) state.requesterOpenId = opts.requesterOpenId;
     active.set(activeKey, state);
     if (opts.knownThreadId) trackSession(opts.knownThreadId, opts.thread);
+    const gateKey = opts.thread.sessionId;
+    gateRuns.set(gateKey, {
+      chatId: opts.chatId,
+      replyTo: opts.replyTo,
+      replyInThread: opts.flat ? false : (opts.replyInThread ?? Boolean(opts.knownThreadId)),
+      requesterOpenId: opts.requesterOpenId,
+      allowAdminWriteBypass: opts.allowAdminWriteBypass !== false,
+      sessionKey: () => topicThreadId,
+    });
 
     // M-3: 池满先排队（占位卡可见可取消）；null = 等待期被 ⏹ 取消，预订已释放。
     const slot = await acquireRunSlot(opts, state, activeKey, reaction);
-    if (!slot) return;
+    if (!slot) { gateRuns.delete(gateKey); return; }
     if (shuttingDown) {
+      gateRuns.delete(gateKey);
       slot.release();
       active.delete(activeKey);
       await opts.thread.close();
@@ -4235,6 +4389,7 @@ export function createOrchestrator(
     let curCardKey: string | undefined;
     let disposeInterrupt: (() => void) | undefined;
     let cardClock: ReturnType<typeof setInterval> | undefined;
+    let activeProgressTitle: ProgressTitleController | undefined;
     // intake durations ride the FIRST turn's stream.timing line only (M-1)
     let intake = opts.timing;
     let firstRec = opts.firstRec;
@@ -4246,12 +4401,21 @@ export function createOrchestrator(
         requesterOpenId: opts.requesterOpenId,
         requestedAt: opts.requestedAt ?? Date.now(),
         summary: opts.summary,
+        allowAdminWriteBypass: opts.allowAdminWriteBypass,
       };
       let replyTo = opts.replyTo;
       let replyInThread = opts.flat ? false : (opts.replyInThread ?? Boolean(opts.knownThreadId));
       for (;;) {
         const turnInput = currentTurn.input;
         state.requesterOpenId = currentTurn.requesterOpenId;
+        gateRuns.set(gateKey, {
+          chatId: opts.chatId,
+          replyTo,
+          replyInThread,
+          requesterOpenId: currentTurn.requesterOpenId,
+          allowAdminWriteBypass: currentTurn.allowAdminWriteBypass !== false,
+          sessionKey: () => topicThreadId,
+        });
         if (titleTurnAttempted && !titleStart && opts.titleJobKey) {
           // A prior turn/start was rejected before turn_started. If a queued
           // follow-up now becomes the first accepted turn, title that message,
@@ -4284,6 +4448,7 @@ export function createOrchestrator(
         let cardMsgId: string | undefined;
         let rc: RunCardState = {
           rs: render.snapshot(),
+          progressTitle: '分析问题',
           voiceMessages: currentTurn.voice ? [currentTurn.voice] : [],
           requesterOpenId: currentTurn.requesterOpenId,
           showTools: render.showTools,
@@ -4456,6 +4621,20 @@ export function createOrchestrator(
         }, 1000);
         cardClock.unref();
 
+        const progressTitle = createProgressTitleController(
+          opts.backendId,
+          currentTurn.titleSource?.text ?? currentTurn.summary ?? turnInput.text ?? '',
+          turnModel,
+          (title) => {
+            rc.progressTitle = title;
+            if (rc.rs.terminal === 'running') {
+              stream.streamCoalesced(channel, buildRunCard(rc), ANSWER_EID);
+            }
+          },
+        );
+        activeProgressTitle = progressTitle;
+        progressTitle.start();
+
         // ⏹ 终止（QW-15）：发 turn/interrupt 后等事件流**自然 done** —— codex
         // 0.139+ 实测 interrupt 4ms 返回、turn/completed(status:"interrupted")
         // 干净收尾（.plans/auto-optimize/research/08b-interrupt-probe.md；旧注释
@@ -4527,6 +4706,7 @@ export function createOrchestrator(
               log.fail('card', err, { phase: 'auto-compact-notice' }),
             );
           }
+          progressTitle.observe(ev);
           render.apply(ev);
           rc.rs = segmentSnapshot();
           // The global mode is live-editable. Re-evaluate on every structural /
@@ -4538,6 +4718,8 @@ export function createOrchestrator(
           // typewriter (cardElement.content), structure → whole-card update.
           stream.streamCoalesced(channel, buildRunCard(rc), ANSWER_EID);
         }
+        progressTitle.dispose();
+        if (activeProgressTitle === progressTitle) activeProgressTitle = undefined;
         clearInterval(cardClock);
         cardClock = undefined;
         state.steerReply = undefined;
@@ -4720,6 +4902,8 @@ export function createOrchestrator(
         .send(opts.chatId, { markdown: runFailureMessage(err, dropped) }, { replyTo: opts.replyTo, replyInThread: !opts.flat })
         .catch((sendError) => log.fail('intake', sendError, { phase: 'run-failure-feedback', dropped }));
     } finally {
+      gateRuns.delete(gateKey);
+      activeProgressTitle?.dispose();
       // A replacement run may have reserved the key while failure feedback
       // was in flight. Never delete another run's reservation.
       if (active.get(activeKey) === state) active.delete(activeKey);
@@ -4769,11 +4953,21 @@ export function createOrchestrator(
     if (opts.requesterOpenId) state.requesterOpenId = opts.requesterOpenId;
     active.set(activeKey, state);
     if (opts.knownThreadId) trackSession(opts.knownThreadId, opts.thread);
+    const gateKey = opts.thread.sessionId;
+    gateRuns.set(gateKey, {
+      chatId: opts.chatId,
+      replyTo: opts.replyTo,
+      replyInThread: opts.flat ? false : (opts.replyInThread ?? Boolean(opts.knownThreadId)),
+      requesterOpenId: opts.requesterOpenId,
+      allowAdminWriteBypass: opts.allowAdminWriteBypass !== false,
+      sessionKey: () => topicThreadId,
+    });
 
     // M-3: 池满先排队（占位卡可见可取消）；null = 等待期被 ⏹ 取消，预订已释放。
     const slot = await acquireRunSlot(opts, state, activeKey);
-    if (!slot) return;
+    if (!slot) { gateRuns.delete(gateKey); return; }
     if (shuttingDown) {
+      gateRuns.delete(gateKey);
       slot.release();
       active.delete(activeKey);
       await opts.thread.close();
@@ -4856,7 +5050,14 @@ export function createOrchestrator(
     // context (null between turns); assigned directly in the loop so TS narrows it.
     // `stream`/`cardMsgId` are null until the turn produces real output — a card is
     // sent LAZILY on first content, so a planning-only turn leaves no empty box.
-    type GoalTurnCtx = { render: RunRender; rc: RunCardState; stream: RunCardStream | null; cardMsgId: string | null; clock?: ReturnType<typeof setInterval> };
+    type GoalTurnCtx = {
+      render: RunRender;
+      rc: RunCardState;
+      stream: RunCardStream | null;
+      cardMsgId: string | null;
+      clock?: ReturnType<typeof setInterval>;
+      progressTitle?: ProgressTitleController;
+    };
     let cur: GoalTurnCtx | null = null;
     let replyTo = opts.replyTo;
     let replyInThread = opts.flat ? false : (opts.replyInThread ?? Boolean(opts.knownThreadId));
@@ -4897,6 +5098,7 @@ export function createOrchestrator(
     /** Finalize a turn's card (terminal render). No-op for a render-only turn that
      * never produced content (no card was sent) — that's how empty turns vanish. */
     const finalizeCard = async (ctx: GoalTurnCtx | null): Promise<void> => {
+      if (ctx) ctx.progressTitle?.dispose();
       if (!ctx || !ctx.stream || !ctx.cardMsgId) return;
       clearInterval(ctx.clock);
       ctx.clock = undefined;
@@ -4922,6 +5124,7 @@ export function createOrchestrator(
       const goalModelDisp = getModelDisplay(cfg);
       const rc: RunCardState = {
         rs: render.snapshot(),
+        progressTitle: '分析问题',
         requesterOpenId: opts.requesterOpenId,
         showTools: render.showTools,
         goalControls: true,
@@ -4929,7 +5132,20 @@ export function createOrchestrator(
           ? { model: opts.model, effort: opts.effort, modelOnTerminal: goalModelDisp === 'always' }
           : {}),
       };
-      return { render, rc, stream: null, cardMsgId: null };
+      const ctx: GoalTurnCtx = { render, rc, stream: null, cardMsgId: null };
+      ctx.progressTitle = createProgressTitleController(
+        opts.backendId,
+        objective,
+        opts.model,
+        (title) => {
+          ctx.rc.progressTitle = title;
+          if (ctx.stream && ctx.rc.rs.terminal === 'running') {
+            ctx.stream.streamCoalesced(channel, buildRunCard(ctx.rc), ANSWER_EID);
+          }
+        },
+      );
+      ctx.progressTitle.start();
+      return ctx;
     };
 
     /** Send this turn's streaming card on first real content (idempotent). */
@@ -4957,6 +5173,8 @@ export function createOrchestrator(
       // chain the next turn's card (and the terminal card) under this one
       replyTo = cardMsgId;
       replyInThread = !opts.flat;
+      const gateRun = gateRuns.get(gateKey);
+      if (gateRun) gateRuns.set(gateKey, { ...gateRun, replyTo, replyInThread });
     };
 
     let lastStatus = 'active';
@@ -5065,6 +5283,7 @@ export function createOrchestrator(
           if (!cur) continue; // set-failure before any turn → terminal card only
         }
         if (!cur) cur = startTurn();
+        cur.progressTitle?.observe(ev);
         cur.render.apply(ev);
         // Reasoning ALONE doesn't warrant a card (a planning-only turn must not leave
         // an empty box); only real output (text / tool calls) sends the card. Once a
@@ -5116,11 +5335,13 @@ export function createOrchestrator(
       }
       if (topicThreadId) await patchSession(topicThreadId, { updatedAt: Date.now() }).catch(() => undefined);
     } catch (err) {
+      cur?.progressTitle?.dispose();
       log.fail('intake', err);
       await channel
         .send(opts.chatId, { markdown: `❌ ${err instanceof Error ? err.message : String(err)}` }, { replyTo: opts.replyTo, replyInThread: !opts.flat })
         .catch(() => undefined);
     } finally {
+      gateRuns.delete(gateKey);
       clearInterval(cur?.clock);
       active.delete(activeKey);
       if (cur?.cardMsgId) runsByCard.delete(cur.cardMsgId);
@@ -5619,6 +5840,7 @@ export function createOrchestrator(
       (k) => active.has(k) || docLocks.has(k),
       SESSION_REAP_IDLE_MS,
       now,
+      SESSION_REAP_KEEP_RECENT,
     );
     for (const key of idle) {
       const thread = sessions.get(key);
@@ -5639,6 +5861,7 @@ export function createOrchestrator(
       state.interrupt?.();
     }
     await sessionTitles.shutdown();
+    await progressTitleWorker.close();
     // adopt 失败的孤儿线程已在 launchRun/launchGoalRun 的 finally 就地 close，
     // 这里只需回收 LIVE 会话缓存。
     const live = [...new Set(sessions.values())];

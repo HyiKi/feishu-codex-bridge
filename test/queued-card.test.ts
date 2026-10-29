@@ -78,7 +78,7 @@ describe('buildQueuedCard', () => {
 // M-3: 空闲进程 reaper 的纯决策 —— busy / 新鲜 / 无打点的都不回收。
 describe('pickIdleSessions', () => {
   const NOW = 1_000_000_000;
-  const IDLE = 45 * 60_000;
+  const IDLE = 2 * 60 * 60_000;
 
   it('reaps only sessions idle past the threshold', () => {
     const touched = new Map<string, number>([
@@ -102,6 +102,17 @@ describe('pickIdleSessions', () => {
   it('never reaps a key without a touch timestamp (caller stamps it first)', () => {
     const out = pickIdleSessions(['unknown'], new Map(), () => false, IDLE, NOW);
     expect(out).toEqual([]);
+  });
+
+  it('keeps the N most recently touched sessions even when stale', () => {
+    const touched = new Map<string, number>([
+      ['oldest', NOW - IDLE * 4],
+      ['older', NOW - IDLE * 3],
+      ['newer', NOW - IDLE * 2],
+      ['newest', NOW - IDLE - 1],
+    ]);
+    const out = pickIdleSessions(touched.keys(), touched, () => false, IDLE, NOW, 2);
+    expect(out.sort()).toEqual(['older', 'oldest']);
   });
 });
 

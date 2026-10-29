@@ -103,6 +103,9 @@ function stopControl(cardKey: string, presentation: StopControlPresentation): Ca
 /** Routing + render inputs for one run card. */
 export interface RunCardState {
   rs: RunState;
+  /** Latest Chinese action title produced by the background title sidecar.
+   * Reasoning text itself is never rendered. */
+  progressTitle?: string;
   /** This display segment ended because an accepted steer opened a new card. */
   continued?: boolean;
   /** Independent of model text, preserved across live and terminal renders. */
@@ -111,7 +114,8 @@ export interface RunCardState {
   cardKey?: string;
   /** topic thread id (known after the topic is created) */
   threadId?: string;
-  /** Who started this run. Only they or an admin may stop it. */
+  /** Who sent the message that started this turn. Also mentioned by the
+   * bridge in the outgoing card; only they or an admin may stop the run. */
   requesterOpenId?: string;
   /** drop tool blocks from the render (pref) */
   showTools?: boolean;
@@ -222,13 +226,16 @@ function renderRunning(state: RunState, rc: RunCardState): CardElement[] {
   const elements: CardElement[] = [];
 
   const answerIdx = currentAnswerIndex(state.blocks);
-  const processBlocks = state.blocks.filter((b, i) => i !== answerIdx && (rc.showTools !== false || b.kind !== 'tool'));
+  const processBlocks = state.blocks.filter((b, i) =>
+    i !== answerIdx && b.kind !== 'reasoning' && (rc.showTools !== false || b.kind !== 'tool'));
   const process = buildProcessBody(processBlocks, rc.images);
-  const title = processTitle(state.terminal, runElapsedMs(state));
+  const title = processTitle(state.terminal, runElapsedMs(state), rc.progressTitle);
   if (process.length) elements.push(processPanel(title, process, true));
   else if (state.startedAt !== undefined) elements.push(md(`<font color='grey'>${title}</font>`));
   const answer = answerIdx >= 0 ? (state.blocks[answerIdx] as Extract<Block, { kind: 'text' }>).content : '';
   if (answer) {
+    const mention = requesterMention(rc, answer);
+    if (mention) elements.push(mention);
     elements.push(...renderRichText(answer, rc.images, { streamTailId: ANSWER_EID, live: true }));
   }
 
@@ -297,17 +304,19 @@ function renderTerminal(state: RunState, rc: RunCardState): CardElement[] {
 
   const answerIdx = lastTextIndex(state.blocks);
   const answer = rc.localFiles?.text ?? (answerIdx >= 0 ? (state.blocks[answerIdx] as Extract<Block, { kind: 'text' }>).content.trim() : '');
+  const mention = requesterMention(rc, answer);
+  if (mention) elements.push(mention);
   const answerElements = rc.localFiles ? renderFileAnswer(rc.localFiles, rc.images)
     : hasMarkdownTable(answer) ? renderReport(answer, { images: rc.images }) : renderRichText(answer, rc.images);
 
   // Everything except the final answer block is "process". (A block after the
   // answer can only be a trailing tool call — keep it folded with the rest.)
-  const processBlocks = state.blocks.filter((_, i) => i !== answerIdx);
+  const processBlocks = state.blocks.filter((b, i) => i !== answerIdx && b.kind !== 'reasoning');
   const blocks = rc.showTools === false ? processBlocks.filter((b) => b.kind !== 'tool') : processBlocks;
   const processBudget = rc.localFiles?.links.length
     ? Math.max(10, Math.min(PROCESS_COMPONENT_BUDGET, 170 - fileComponentCount(answerElements))) : PROCESS_COMPONENT_BUDGET;
   const processEls = buildProcessBody(blocks, rc.images, processBudget);
-  const title = processTitle(state.terminal, runElapsedMs(state));
+  const title = processTitle(state.terminal, runElapsedMs(state), rc.progressTitle);
   if (processEls.length) elements.push(processPanel(title, processEls, false));
   else if (state.startedAt !== undefined) elements.push(md(`<font color='grey'>${title}</font>`));
 
@@ -319,9 +328,7 @@ function renderTerminal(state: RunState, rc: RunCardState): CardElement[] {
   // images become pills in place, and a ref that never resolved (path outside the
   // project, missing/oversized file, failed upload) renders as text — never raw
   // `![](…)`, which the client would resolve as a broken image node.
-  if (answer) {
-    elements.push(...answerElements);
-  }
+  if (answer) elements.push(...answerElements);
 
   if (rc.continued) {
     elements.push(noteMd('已接收补充，后续输出见下一张卡片'));
@@ -348,6 +355,20 @@ function renderTerminal(state: RunState, rc: RunCardState): CardElement[] {
   if (mEl) elements.push(mEl);
 
   return elements;
+}
+
+/**
+ * The Bridge's own @ of this turn's sender. Done here, in the outgoing card,
+ * rather than asking the agent to repeat an id it was told about: the reply then
+ * always notifies whoever actually sent the current message. Avoid a duplicate
+ * when the answer already opens with the same mention.
+ */
+function requesterMention(rc: RunCardState, answer: string): CardElement | null {
+  const id = rc.requesterOpenId;
+  if (!id) return null;
+  const start = answer.trimStart();
+  if (start.startsWith(`<at id=${id}`) || start.startsWith(`<at id="${id}"`)) return null;
+  return md(`<at id=${id}></at>`);
 }
 
 /**

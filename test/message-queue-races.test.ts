@@ -6,6 +6,7 @@ import type { AgentEvent, AgentInput } from '../src/agent/types';
 
 const fake = vi.hoisted(() => ({
   groupMode: 'single' as 'single' | 'multi',
+  clarifyBeforeAct: false,
   backend: { capabilities: { steer: true }, id: 'codex', listModels: vi.fn(async () => []), resumeThread: vi.fn(), startThread: vi.fn() },
   voice: vi.fn(async (_channel: unknown, msg: NormalizedMessage) => ({ text: '语音正文', voice: { messageId: msg.messageId, text: '语音正文', transcribed: true } })),
   live: vi.fn(),
@@ -19,7 +20,7 @@ vi.mock('../src/core/logger', () => ({ log: fake.log, withTrace: (_ctx: unknown,
 vi.mock('../src/agent', async (original) => ({ ...await original<object>(), createBackend: () => fake.backend }));
 vi.mock('../src/project/registry', async (original) => ({
   ...await original<object>(),
-  getProjectByChatId: async () => ({ name: 'test', chatId: 'chat', cwd: '/test', groupMode: fake.groupMode }),
+  getProjectByChatId: async () => ({ name: 'test', chatId: 'chat', cwd: '/test', groupMode: fake.groupMode, clarifyBeforeAct: fake.clarifyBeforeAct }),
 }));
 vi.mock('../src/bot/session-store', async (original) => ({
   ...await original<object>(),
@@ -111,6 +112,7 @@ function setup(policy: 'steer' | 'queue' = 'steer') {
 beforeEach(() => {
   vi.clearAllMocks();
   fake.groupMode = 'single';
+  fake.clarifyBeforeAct = false;
   fake.voice.mockReset().mockImplementation(async (_channel, msg) => voiceResult('语音正文', msg.messageId));
   fake.backend.capabilities.steer = true;
   fake.final.mockReset().mockResolvedValue(true);
@@ -126,6 +128,23 @@ afterEach(async () => {
 const until = (check: () => void) => vi.waitFor(check, { interval: 5 });
 
 describe('message queue lifecycle', () => {
+  it('attaches the grilling skill and clarification policy when the project opts in', async () => {
+    fake.clarifyBeforeAct = true;
+    const run = thread();
+    fake.backend.resumeThread.mockResolvedValue(run.t);
+    const o = setup('queue');
+
+    await o.onMessage(message('plan this carefully'));
+    await until(() => expect(fake.backend.resumeThread).toHaveBeenCalledOnce());
+
+    expect(fake.backend.resumeThread).toHaveBeenCalledWith(expect.objectContaining({
+      skills: [{ name: 'grilling', path: expect.stringContaining('/.agents/skills/grilling/SKILL.md') }],
+      extraInstructions: expect.stringContaining('执行前置澄清'),
+    }));
+
+    run.turns[0]!.resolve();
+  });
+
   it('starts the follow-up when steer rejects after its original consumer has finished', async () => {
     const run = thread();
     fake.backend.resumeThread.mockResolvedValue(run.t);
