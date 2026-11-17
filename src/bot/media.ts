@@ -21,9 +21,11 @@ import { log } from '../core/logger';
  * (message-resource/get); the standalone `im.v1.image.get` (what the SDK's
  * `channel.downloadResource` uses) is limited to images the BOT itself
  * uploaded. Per Feishu, message-resource/get needs the bot to share the
- * resource's chat and "暂不支持获取合并转发消息中的子消息的资源文件" — so forwarded
- * sub-message images are attempted best-effort and skipped (logged, not
- * thrown) when Feishu rejects them.
+ * resource's chat. For a resource inside a merged forward, the resource API
+ * requires the OUTERMOST merge_forward message id; using a child message id
+ * is rejected with HTTP 400 / error code 234003 even though the child message
+ * is what carries the image_key. Child ids are therefore only used to find
+ * the keys, never as the download container.
  */
 
 /** Cap per message so a flood of images can't wedge a turn or fill the disk. */
@@ -33,8 +35,8 @@ const MAX_IMAGES = 9;
 const MEDIA_TTL_MS = 60 * 60_000;
 
 interface ImageRef {
-  /** the message that DIRECTLY holds the resource — `msg.messageId` for a plain
-   * image, the sub-message id for a forwarded one. */
+  /** Resource download container: `msg.messageId` for a plain image AND for
+   * every image found inside a merged forward. */
   messageId: string;
   /** Feishu image_key (img_v3_…). */
   fileKey: string;
@@ -115,7 +117,9 @@ async function gatherRefs(channel: LarkChannel, msg: NormalizedMessage): Promise
     for (const sub of items) {
       if (!sub.message_id || sub.message_id === msg.messageId) continue;
       for (const key of imageKeysFromContent(sub.msg_type, sub.body?.content)) {
-        add(sub.message_id, key);
+        // Feishu's resource endpoint needs the outer merge_forward message id,
+        // not the child message id that owns the image_key.
+        add(msg.messageId, key);
       }
     }
   }
@@ -182,8 +186,7 @@ async function downloadOne(channel: LarkChannel, ref: ImageRef, index: number): 
     await res.writeFile(file);
     return file;
   } catch (err) {
-    // Forwarded sub-message images land here (Feishu rejects message-resource
-    // for merge_forward children) — info, not error: the turn still proceeds.
+    // A rejected resource should not break the turn; the caller logs/counts it.
     log.warn('intake', 'image-download-failed', { fileKey: ref.fileKey.slice(0, 24), err: String(err) });
     return undefined;
   }
@@ -243,10 +246,11 @@ async function pruneOldMedia(dir: string): Promise<void> {
  * 'full' tier — qa/write sandboxes confine reads to cwd. That's an accepted
  * limitation: file intake targets the full-access bots (the common case).
  *
- * Scope: DIRECT uploads only. Feishu does not serve merge_forward sub-message
- * resources ("暂不支持获取合并转发消息中的子消息的资源文件"), so a forwarded file is
- * never downloadable — we don't even attempt it (unlike images, which try
- * best-effort), keeping the forwarded transcript untouched.
+ * Scope: DIRECT uploads plus merge_forward sub-message files, best-effort.
+ * For a merged forward, discover the file_key in the child messages but call
+ * message-resource/get with the outer merge_forward message id. Failed refs
+ * are counted and surfaced to the prompt instead of silently dropping the
+ * attachment.
  */
 
 /** Cap per message so a flood of files can't wedge a turn or fill the disk. */
@@ -262,35 +266,105 @@ export interface InboundFile {
   name: string;
 }
 
-interface FileRef {
+export interface FileRef {
   messageId: string;
   fileKey: string;
   fileName?: string;
 }
 
+/** Match the SDK's `<file key="…" name="…"/>` placeholder (key required so a
+ * forwarded transcript that merely contains the literal word `<file>` stays on
+ * the fast path). */
+const FILE_TOKEN_RE = /<file\b[^<]*\bkey="[^"]+"[^<]*\/>/;
+const FILE_TOKEN_GLOBAL_RE = /<file\b[^<]*\bkey="[^"]+"[^<]*\/>/g;
+
+function countFileTokens(content: string): number {
+  return content.match(FILE_TOKEN_GLOBAL_RE)?.length ?? 0;
+}
+
 /** Cheap synchronous check: does this message carry a downloadable file
- * attachment? Mirrors {@link messageHasImages}; merge_forward is excluded — its
- * sub-message files are never servable by Feishu (see module note). */
+ * attachment? Mirrors {@link messageHasImages}; for merge_forward we only enter
+ * the async sub-message walk when the rendered transcript actually contains a
+ * file token, keeping ordinary forwarded text on the fast path. */
 export function messageHasFiles(msg: NormalizedMessage): boolean {
-  return (msg.resources ?? []).some((r) => r.type === 'file');
+  if ((msg.resources ?? []).some((r) => r.type === 'file')) return true;
+  return msg.rawContentType === 'merge_forward' && FILE_TOKEN_RE.test(msg.content);
+}
+
+/** Pull a file ref out of one sub-message's raw body. Exported for testing. */
+export function fileRefFromContent(
+  messageId: string,
+  msgType: string | undefined,
+  content: string | undefined,
+): FileRef | undefined {
+  if (msgType !== 'file' || !content) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  const fileKey = (parsed as { file_key?: unknown } | null)?.file_key;
+  if (typeof fileKey !== 'string' || !fileKey) return undefined;
+  const fileName = (parsed as { file_name?: unknown } | null)?.file_name;
+  return {
+    messageId,
+    fileKey,
+    fileName: typeof fileName === 'string' ? fileName : undefined,
+  };
+}
+
+/**
+ * Collect top-level file resources first, then any files inside a merged
+ * forward. The outer merge_forward id is the resource container; child ids
+ * are only used to discover the file key. Deduped by file key.
+ */
+async function gatherFileRefs(channel: LarkChannel, msg: NormalizedMessage): Promise<FileRef[]> {
+  const refs: FileRef[] = [];
+  const seen = new Set<string>();
+  const add = (ref: FileRef): void => {
+    if (seen.has(ref.fileKey)) return;
+    seen.add(ref.fileKey);
+    refs.push(ref);
+  };
+
+  for (const r of msg.resources ?? []) {
+    if (r.type === 'file' && r.fileKey) add({ messageId: msg.messageId, fileKey: r.fileKey, fileName: r.fileName });
+  }
+
+  if (msg.rawContentType === 'merge_forward' && FILE_TOKEN_RE.test(msg.content)) {
+    const items = await fetchSubMessages(channel, msg.messageId);
+    for (const sub of items) {
+      if (!sub.message_id) continue;
+      const ref = fileRefFromContent(msg.messageId, sub.msg_type, sub.body?.content);
+      if (ref) add(ref);
+    }
+  }
+
+  return refs;
+}
+
+export interface InboundFileStatus {
+  files: InboundFile[];
+  /** Resources found in the message that could not be downloaded. */
+  failed: number;
 }
 
 /**
  * Download every file attachment in `msg` to {@link paths.inboundDir} and
- * return their local paths + original names. Best-effort end to end: a failed
- * download is logged and skipped, never thrown — a missing file must not break
- * the turn.
+ * return the successful files plus a failure count. Best-effort end to end: a
+ * failed download is logged and counted, never thrown — a missing file must
+ * not break the turn, but the prompt must know it was missing.
  */
-export async function collectInboundFiles(channel: LarkChannel, msg: NormalizedMessage): Promise<InboundFile[]> {
-  const refs: FileRef[] = [];
-  const seen = new Set<string>();
-  for (const r of msg.resources ?? []) {
-    if (r.type === 'file' && r.fileKey && !seen.has(r.fileKey)) {
-      seen.add(r.fileKey);
-      refs.push({ messageId: msg.messageId, fileKey: r.fileKey, fileName: r.fileName });
-    }
-  }
-  if (refs.length === 0) return [];
+export async function collectInboundFilesWithStatus(
+  channel: LarkChannel,
+  msg: NormalizedMessage,
+): Promise<InboundFileStatus> {
+  const directFiles = (msg.resources ?? []).filter((r) => r.type === 'file' && r.fileKey).length;
+  const forwardedFiles = msg.rawContentType === 'merge_forward' ? countFileTokens(msg.content) : 0;
+  const expected = directFiles + forwardedFiles;
+  const refs = await gatherFileRefs(channel, msg);
+  if (refs.length === 0) return { files: [], failed: expected };
 
   await pruneOldMedia(paths.inboundDir);
   try {
@@ -300,12 +374,19 @@ export async function collectInboundFiles(channel: LarkChannel, msg: NormalizedM
   }
 
   const out: InboundFile[] = [];
+  let failed = Math.max(0, expected - refs.length) + Math.max(0, refs.length - MAX_FILES);
   for (const ref of refs.slice(0, MAX_FILES)) {
     const f = await downloadOneFile(channel, ref);
     if (f) out.push(f);
+    else failed++;
   }
-  log.info('intake', 'files', { found: refs.length, downloaded: out.length });
-  return out;
+  log.info('intake', 'files', { found: refs.length, downloaded: out.length, failed });
+  return { files: out, failed };
+}
+
+/** Back-compat wrapper for callers that only need the downloaded files. */
+export async function collectInboundFiles(channel: LarkChannel, msg: NormalizedMessage): Promise<InboundFile[]> {
+  return (await collectInboundFilesWithStatus(channel, msg)).files;
 }
 
 async function downloadOneFile(channel: LarkChannel, ref: FileRef): Promise<InboundFile | undefined> {

@@ -9,9 +9,12 @@ import { paths } from './paths';
  *
  *   ~/.feishu-codex-bridge/secrets.enc      — JSON map { id → encrypted envelope }
  *   ~/.feishu-codex-bridge/.keystore.salt   — 32 random bytes, generated once
+ *   ~/.feishu-codex-bridge/.keystore.identity — 首次初始化时的稳定 hostname
  *
- * Both chmod 0600. Key derived (PBKDF2-SHA256, 100k) from
- * `hostname + username + salt`. Defense-in-depth against accidental
+ * All three chmod 0600. Key derived (PBKDF2-SHA256, 100k) from
+ * `persisted identity + username + salt`. The identity file keeps decryption
+ * stable when macOS changes `os.hostname()` after a network/DHCP change.
+ * Defense-in-depth against accidental
  * disclosure (backups, git, log dumps) — not against a same-user process.
  */
 
@@ -70,9 +73,27 @@ async function loadOrCreateSalt(): Promise<Buffer> {
   return salt;
 }
 
+async function loadOrCreateIdentity(): Promise<string> {
+  try {
+    const stored = (await readFile(paths.keystoreIdentityFile, 'utf8')).trim();
+    if (stored.length > 0 && stored.length <= 255 && !/[\x00-\x1f\x7f]/.test(stored)) return stored;
+    throw new Error('keystore identity file is invalid');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  const identity = hostname();
+  await mkdir(dirname(paths.keystoreIdentityFile), { recursive: true });
+  const tmp = `${paths.keystoreIdentityFile}.tmp-${process.pid}`;
+  await writeFile(tmp, `${identity}\n`, 'utf8');
+  await chmod(tmp, 0o600);
+  await rename(tmp, paths.keystoreIdentityFile);
+  return identity;
+}
+
 async function deriveKey(): Promise<Buffer> {
   const salt = await loadOrCreateSalt();
-  const seed = `${hostname()}|${userInfo().username}`;
+  const identity = await loadOrCreateIdentity();
+  const seed = `${identity}|${userInfo().username}`;
   return pbkdf2Sync(seed, salt, PBKDF2_ITER, KEY_LEN, 'sha256');
 }
 

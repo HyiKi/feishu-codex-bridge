@@ -25,23 +25,6 @@ export interface ClassifyOptions {
 const MAX_FILE_BYTES = 512 * 1024;
 const SKIP_PATH_PARTS = ['/node_modules/', '/.agents/skills/', '/.codex/', '/.local/share/mcp-call/', '/usr/', '/opt/', '/Applications/'];
 
-/** dms-mcp-server tools known to be read-only (executeScript is deliberately
- * left ungated by the project owner). Every other DMS tool is gated. */
-const DMS_PASS_TOOLS = new Set([
-  'listInstances',
-  'getInstance',
-  'searchDatabase',
-  'getDatabase',
-  'listTables',
-  'getTableDetailInfo',
-  'getOrderInfo',
-  'executeScript',
-  'generateSql',
-  'fixSql',
-  'answerSqlSyntax',
-  'optimizeSql',
-]);
-
 const SQL_WRITE_ANYWHERE_RE =
   /\b(?:insert|update|delete|drop|alter|create|truncate|grant|revoke|merge|into|vacuum|reindex)\b|\bcomment\s+on\b|\bset\s+(?:session|local|role)\b|\bdo\s+(?:\$|language)|\bfor\s+(?:update|share|no\s+key)\b|\b(?:nextval|setval|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|pg_sleep|lo_import|lo_export|lo_unlink|dblink\w*|pg_advisory_lock\w*|set_config)\s*\(/i;
 
@@ -60,8 +43,6 @@ const CODE_HTTP_WRITE: Array<[RegExp, string]> = [
   [/\b(?:requests|httpx|axios|got|ky|superagent|aiohttp|session|client|http|https|api)\w*\s*\.\s*(?:post|put|patch|delete)\s*\(/i, '脚本中的 HTTP 写请求'],
   [/\bmethod['"]?\s*[:=]\s*['"](?:POST|PUT|PATCH|DELETE)['"]/i, '脚本中的 HTTP 写方法'],
 ];
-
-const GATED_TOOL_NAME_RE = /\b(?:createDataChangeOrder|submitOrderApproval|approveOrder)\b/;
 
 const CMD_BOUNDARY = '(?:^|[\\s;&|(`\'"=])(?:[^\\s;&|\'"`]*\\/)?';
 const MCP_CALL_RE = new RegExp(`${CMD_BOUNDARY}mcp-call\\s+call\\s+(\\S+)\\s+(\\S+)`, 'g');
@@ -211,8 +192,8 @@ function checkMcpCall(
       reasons.add('mcp-call 的目标 server/tool 无法静态确认');
       return;
     }
-    if (server === 'dms-mcp-server') {
-      if (!DMS_PASS_TOOLS.has(tool)) reasons.add(`DMS 写操作：${tool}`);
+    if (server === 'dms-dgate') {
+      reasons.add(`Agent Data Gateway 已禁用：${server}.${tool}`);
       return;
     }
     if (server !== 'erp-dev-database' || !tool.startsWith('execute_sql')) return;
@@ -312,9 +293,6 @@ function checkHadesDev(
 function checkCode(corpus: string, reasons: Set<string>): void {
   for (const [re, why] of CODE_HTTP_WRITE) if (re.test(corpus)) reasons.add(why);
   if (CODE_SQL_WRITE_RE.test(corpus) && CODE_DB_DRIVER_RE.test(corpus)) reasons.add('脚本经数据库驱动执行写语句');
-  if (GATED_TOOL_NAME_RE.test(corpus) && /mcp-call|dms-mcp-server|mcporter/i.test(corpus)) {
-    reasons.add('脚本中调用 DMS 变更工具');
-  }
 }
 
 export function classifyCommand(command: string, opts: ClassifyOptions = {}): GateVerdict {

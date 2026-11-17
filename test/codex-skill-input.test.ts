@@ -79,7 +79,7 @@ afterAll(async () => {
 describe('codex native skill input', () => {
   it('attaches thread skills to both turn/start and turn/steer', async () => {
     await withFakeCodex(async () => {
-      const skill = { name: 'grilling', path: '/tmp/grilling/SKILL.md' };
+      const skill = { name: 'sample-skill', path: '/tmp/sample-skill/SKILL.md' };
       const backend = new CodexAppServerBackend();
       const thread = await backend.startThread({ cwd: dir, skills: [skill] });
       const run = thread.runStreamed({ text: 'hello' });
@@ -89,8 +89,9 @@ describe('codex native skill input', () => {
       );
       await vi.waitFor(() => expect(run.turnId()).toBe('t1'));
       await thread.steer({ text: 'guide' }, 't1');
+      await thread.steer({ text: 'internal nudge' }, 't1', { includeSkills: false });
       await vi.waitFor(() =>
-        expect(recordedInputs().filter((entry) => entry.method === 'turn/steer')).toHaveLength(1),
+        expect(recordedInputs().filter((entry) => entry.method === 'turn/steer')).toHaveLength(2),
       );
 
       expect(recordedInputs()).toEqual([
@@ -98,15 +99,19 @@ describe('codex native skill input', () => {
           method: 'turn/start',
           input: [
             { type: 'text', text: 'hello', text_elements: [] },
-            { type: 'skill', name: 'grilling', path: '/tmp/grilling/SKILL.md' },
+            { type: 'skill', name: 'sample-skill', path: '/tmp/sample-skill/SKILL.md' },
           ],
         },
         {
           method: 'turn/steer',
           input: [
             { type: 'text', text: 'guide', text_elements: [] },
-            { type: 'skill', name: 'grilling', path: '/tmp/grilling/SKILL.md' },
+            { type: 'skill', name: 'sample-skill', path: '/tmp/sample-skill/SKILL.md' },
           ],
+        },
+        {
+          method: 'turn/steer',
+          input: [{ type: 'text', text: 'internal nudge', text_elements: [] }],
         },
       ]);
 

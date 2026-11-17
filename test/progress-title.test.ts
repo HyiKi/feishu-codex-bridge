@@ -96,4 +96,24 @@ describe('progress title sidecar', () => {
     await vi.waitFor(() => expect(errors).toHaveLength(1));
     controller.dispose();
   });
+
+  it('caps default background generations at four', async () => {
+    const generate = vi.fn().mockResolvedValue(undefined);
+    const controller = new ProgressTitleController({
+      goal: '查询订单',
+      generate,
+      minIntervalMs: 0,
+      onChange: () => undefined,
+    });
+
+    controller.start();
+    for (let i = 0; i < 8; i += 1) {
+      controller.observe({ type: 'thinking', itemId: `r${i}`, text: `step ${i}` });
+      const expected = Math.min(i + 1, 4);
+      await vi.waitFor(() => expect(generate).toHaveBeenCalledTimes(expected));
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(generate).toHaveBeenCalledTimes(4);
+    controller.dispose();
+  });
 });

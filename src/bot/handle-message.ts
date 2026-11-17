@@ -6,6 +6,7 @@ import type { VoiceReply } from '../voice/types';
 import { steerWithDeadline, isRejectedSteer } from './steer-delivery';
 import { TurnCardEvents, type SteerCardEvent } from './turn-card-events';
 import { runSegment } from '../card/run-segment';
+import { ToolLoopGuard, TOOL_LOOP_NUDGE_TEXT } from './tool-loop-guard';
 import {
   buildProgressTitlePrompt,
   ProgressTitleController,
@@ -48,7 +49,7 @@ import {
   type AdminWriteOp,
 } from '../admin/ops';
 import { isGoalTerminal, UsageError } from '../agent/types';
-import { CLARIFY_BEFORE_ACT_INSTRUCTIONS, GRILLING_SKILL } from '../agent/bridge-instructions';
+import { CLARIFY_BEFORE_ACT_INSTRUCTIONS } from '../agent/bridge-instructions';
 import {
   getMaxConcurrentRuns,
   getPendingPolicy,
@@ -162,9 +163,9 @@ import { inspectCliBridgeHooks, installCliBridgeHooks, resolveBridgeHookCommand 
 import type { CliBridgeRuntimeHooks } from '../cli-bridge/service';
 export type { CliBridgeRuntimeHooks };
 import {
-  sendCompletionReminderReply,
-  type CompletionReminderReplyInput,
-} from './completion-reminder';
+  sendTerminalCardNotification,
+  type TerminalCardNotificationInput,
+} from './terminal-notification';
 import {
   acquireUpdateLock,
   currentVersion,
@@ -223,7 +224,7 @@ import {
 import { handleDmConsole } from './dm-console';
 import { fetchInteractiveCardText, isDegradedCardContent } from './card-content';
 import {
-  collectInboundFiles,
+  collectInboundFilesWithStatus,
   collectInboundImages,
   messageHasFiles,
   messageHasImages,
@@ -889,9 +890,9 @@ export function createOrchestrator(
     for (const refresh of completionReminderRefreshers.values()) refresh();
   };
   /** Network attempts are marked before awaiting Feishu: one terminal card can
-   * never produce duplicate reminder replies, even if a surrounding cleanup or
-   * callback path is re-entered. */
-  const completionReminderSent = new RecentIdCache(4096, 24 * 60 * 60_000);
+   * never produce duplicate reminder/mention replies, even if a surrounding
+   * cleanup or callback path is re-entered. */
+  const terminalNotificationSent = new RecentIdCache(4096, 24 * 60 * 60_000);
   /** the latest settings-bearing run card per topic thread */
   const lastRunCard = new Map<string, string>();
   /** latest context usage per session (sessionKey → tokens), for `/context`.
@@ -1314,7 +1315,7 @@ export function createOrchestrator(
   /** Thread-start options for the project's write gate and clarification policy. */
   function projectAgentOptions(
     project: Project | undefined,
-  ): Pick<StartThreadOptions, 'commandApprover' | 'extraInstructions' | 'skills'> {
+  ): Pick<StartThreadOptions, 'commandApprover' | 'extraInstructions'> {
     const instructions: string[] = [];
     if (project?.writeGate) instructions.push(WRITE_GATE_INSTRUCTIONS);
     if (project?.clarifyBeforeAct) instructions.push(CLARIFY_BEFORE_ACT_INSTRUCTIONS);
@@ -1323,7 +1324,6 @@ export function createOrchestrator(
         ? { commandApprover: writeGate.approverFor((threadId) => gateRuns.get(threadId), project.cwd) }
         : {}),
       ...(instructions.length > 0 ? { extraInstructions: instructions.join('\n\n') } : {}),
-      ...(project?.clarifyBeforeAct ? { skills: [GRILLING_SKILL] } : {}),
     };
   }
 
@@ -1371,14 +1371,16 @@ export function createOrchestrator(
     const ingested = msg.rawContentType === 'audio' ? await ingestVoice(channel, msg, voice) : { text };
     let body = ingested.text;
     if (messageHasFiles(msg)) {
-      const files = await collectInboundFiles(channel, msg);
+      const { files, failed } = await collectInboundFilesWithStatus(channel, msg);
       body = weaveFileManifest(text, files);
-      // A file-ONLY message whose download failed (oversize / Feishu reject /
-      // transient) strips to '' — don't hand codex a blank turn (wasted run +
-      // empty card). Tell it the attachment couldn't be read so it can say so.
-      if (!body.trim()) {
-        body =
-          '用户发来一个附件，但桥没能下载它（可能超过 50MB 上限或被飞书拒绝）。请告诉用户附件没读到，可以重发，或改为粘贴文本 / 发图片。';
+      // A failed download (oversize / Feishu reject / transient) must not
+      // become a silent blank turn or an invisible attachment. Give codex an
+      // explicit instruction to ask for a resend.
+      if (failed > 0) {
+        const notice =
+          `[桥接未能下载 ${failed} 个附件（常见原因是超过 50MB 上限、资源权限不足或被飞书拒绝）。` +
+          '请明确告诉用户这些附件没有被读取，并请其单独发送文件或提供云文档链接，不要猜测附件内容。]';
+        body = body.trim() ? `${body}\n\n${notice}` : notice;
       }
     }
     if (msg.replyToMessageId) {
@@ -4118,8 +4120,8 @@ export function createOrchestrator(
   }
 
   // ── shared run loop ───────────────────────────────────────────────
-  async function sendCompletionReminder(input: CompletionReminderReplyInput): Promise<void> {
-    await sendCompletionReminderReply({ channel, cfg, dedupe: completionReminderSent }, input);
+  async function notifyTerminalCard(input: TerminalCardNotificationInput): Promise<void> {
+    await sendTerminalCardNotification({ channel, cfg, dedupe: terminalNotificationSent }, input);
   }
 
   interface LaunchOpts {
@@ -4437,6 +4439,9 @@ export function createOrchestrator(
         const run = opts.thread.runStreamed(turnInput, { model: turnModel, effort: turnEffort });
         titleTurnAttempted = true;
         const turnStartAt = Date.now(); // turn/start 已在 runStreamed() 内发出（与下面的建卡并行）
+        const toolLoopGuard = new ToolLoopGuard({
+          canNudge: () => Boolean(run.turnId()) && !writeGate.hasPendingFor(opts.thread.sessionId),
+        });
         state.run = run;
         const render = new RunRender();
         const cardEvents = new TurnCardEvents();
@@ -4707,6 +4712,22 @@ export function createOrchestrator(
             );
           }
           progressTitle.observe(ev);
+          if (toolLoopGuard.observe(ev)) {
+            const turnId = run.turnId();
+            if (turnId && opts.thread.supportsSteer !== false) {
+              void opts.thread
+                .steer({ text: TOOL_LOOP_NUDGE_TEXT }, turnId, { includeSkills: false })
+                .then(() =>
+                  log.info('agent', 'tool-loop-nudge', {
+                    turnId,
+                    toolUses: toolLoopGuard.toolUses,
+                  }),
+                )
+                .catch((err) =>
+                  log.warn('agent', 'tool-loop-nudge-failed', { err: String(err) }),
+                );
+            }
+          }
           render.apply(ev);
           rc.rs = segmentSnapshot();
           // The global mode is live-editable. Re-evaluate on every structural /
@@ -4820,6 +4841,8 @@ export function createOrchestrator(
               doneToTerminal: terminalAt - doneAt,
               events: evCount,
               textChars,
+              toolUses: toolLoopGuard.toolUses,
+              nudges: toolLoopGuard.didNudge ? 1 : 0,
               pushes: st.pushCount,
               cardPushes: st.cardPushes,
               elPushes: st.elPushes,
@@ -4842,7 +4865,7 @@ export function createOrchestrator(
             touchSession(topicThreadId); // 轮次收尾打点（M-3 reaper 的空闲时钟）
             await patchSession(topicThreadId, { updatedAt: Date.now() });
           }
-          await sendCompletionReminder({
+          await notifyTerminalCard({
             cardMsgId: finalMsgId,
             requesterOpenId: currentTurn.requesterOpenId,
             outcome: rc.rs.terminal === 'running' ? 'done' : rc.rs.terminal,

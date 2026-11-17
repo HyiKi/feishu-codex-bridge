@@ -1,7 +1,3 @@
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import type { AgentSkill } from './types';
-
 /**
  * Bridge-scoped developer guidance, injected ONLY into threads this bridge
  * starts (never the user's own codex/claude usage). Teaches the output
@@ -37,27 +33,31 @@ export const BRIDGE_DEVELOPER_INSTRUCTIONS = [
   '3) 执行效率：用户在飞书里等待回复，请减少串行等待。',
   '多个互不依赖的只读操作（读多个文件、多条 rg/git 查询、多个只读 MCP/数据库查询、前端/后端/日志的并行调查）',
   '应在同一步里一次性发起并行调用，不要逐个等待；后一步依赖前一步结果的操作保持串行。',
-  '以下情形不要并行：写文件、修改同一文件、数据库写入、部署/生产操作、需要用户确认的操作，这些仍遵循项目规则逐项确认后再执行。',
+  '以下情形不要并行：写文件、修改同一文件、数据库写入、部署/生产操作、需要用户确认的操作；写操作按项目授权矩阵执行，矩阵内信息明确时直接执行，矩阵外再确认。',
   '只有大型、相互独立的只读调查才考虑 subagent：最多 2 个、不嵌套、只读，由你汇总结论并负责所有写操作；小任务直接做，不要为了形式开 subagent。',
   '长耗时命令（构建、全量测试）只在改动验证确有必要时运行，优先跑最小范围的测试。',
+  '',
+  '4) Trellis/任务管理：不要在飞书回复、进度卡或澄清卡中主动提出“是否创建 Trellis 任务”或类似的项目管理问题。',
+  '需要做任务管理决策时，直接采用你的推荐项并继续：只读、查询、解释和简单单步任务默认不创建；复杂开发任务按项目 Trellis 流程自动创建并继续。',
+  '只有用户明确询问 Trellis 时，才简要说明你采用的推荐项；不要要求用户在推荐项和备选项之间二次选择。',
+  '',
+  '5) 知识路由：规则、口径、算法、状态机、权限边界以当前代码和项目 spec 为准；数据库/配置只用于当前值和当前启用状态，不能反推规则。',
+  '先判断问题类型，再选择读取路径；有项目级 Fast Path 时先命中 Fast Path。业务文档只用于项目归属、入口和背景，不替代代码；不要因为“能查库”就先查库。',
 ].join('\n');
 
-/** The actual interview behavior lives in `grilling`; `grill-me` is only a
- * user-invocable wrapper (`disable-model-invocation: true`) that delegates to it. */
-export const GRILLING_SKILL: AgentSkill = {
-  name: 'grilling',
-  path: join(homedir(), '.agents', 'skills', 'grilling', 'SKILL.md'),
-};
-
-/** Prompt-level clarification policy for projects that opt into it. This is
- * intentionally advisory only: the existing write gate remains the hard boundary. */
+/** Prompt-level clarification policy for projects that opt into it. It does
+ * not run an interview-style clarification flow; it asks only when a real
+ * conflict or ambiguity remains, and frames the question around system/code
+ * rules. This is intentionally advisory only: the existing write gate remains
+ * the hard boundary. */
 export const CLARIFY_BEFORE_ACT_INSTRUCTIONS = [
   '执行前置澄清（项目级指令，不改变现有写门禁）：',
-  '本项目普通对话的每轮用户消息都会附带 grilling skill；若当前运行模式未附带该 skill，也按同样规则处理。请把它当作任务开始前的判断流程，而不是对每条消息机械提问。',
-  '纯只读问答/查询直接执行；只有可能出现写操作、配置/部署/数据库/工单/外部消息等副作用，或目标、范围、参数、授权存在关键歧义时，先澄清。',
-  '需要澄清时：一次只问一个最高价值的问题，并为每个问题给出你推荐的选择；能通过文件、仓库、数据库或工具核实的事实先自行核实，不要问用户。',
-  '所有关键决策确认后，先给出可执行方案，至少包括：环境与目标对象/ID、范围、具体命令/API/SQL/文件变更、主要副作用与影响面、回滚方式、验证方式、剩余假设。',
-  '方案展示后必须停在该方案之前，等待用户针对该具体方案作出明确同意；由你判断用户是否真的明确同意，不要把“我想……”、沉默、旧授权、含糊的“好/继续”当作同意。',
-  '用户确认后只执行已确认方案；目标、参数、范围或副作用变化时重新确认。纯只读且授权明确的查询无需为了流程重复询问。',
-  '本规则优先于写门禁中的“管理员直接执行”：管理员也必须先完成本次方案确认；确认后的实际写入仍可按现有门禁规则直接执行，不再额外弹审批卡。',
+  '不运行面试式澄清，也不对每条消息机械提问。默认直接执行；只有在存在真实异议、规则冲突或关键歧义，且无法从代码、规范或运行证据自行判定时，才向用户询问。',
+  '询问必须偏向系统代码规则：优先确认接口契约、数据库 schema/字段、状态机与状态迁移、权限/租户边界、配置优先级、错误处理与幂等语义、版本与兼容性约束；不要先问业务偏好或开放式意见。',
+  '提问前先自行核实：读相关代码、spec、配置、schema 或运行结果；能把问题收敛到具体规则时再问。一次只问一个最关键的问题，并给出你推荐的系统规则或默认值。',
+  '纯只读问答/查询直接执行；写操作按项目授权矩阵执行，矩阵内信息明确时直接执行并回读，矩阵外或关键字段缺失时才澄清。',
+  '需要用户确认时，先给出可执行方案，至少包括：环境与目标对象/ID、范围、具体命令/API/SQL/文件变更、主要副作用与影响面、回滚方式、验证方式、剩余假设。命中授权矩阵且信息完整时直接执行，不先展示完整方案。',
+  '只有未命中授权矩阵或关键信息不完整时，才停在方案前等待用户明确同意；由你判断用户是否真的明确同意，不要把“我想……”、沉默、旧授权、含糊的“好/继续”当作同意。',
+  '矩阵内信息明确时只执行并回读，不额外索取确认；矩阵外动作在目标、参数、范围或副作用变化时重新确认。纯只读且授权明确的查询无需为了流程重复询问。',
+  '本规则不覆盖项目授权矩阵：管理员也按矩阵执行，矩阵内写操作直接执行，矩阵外才确认；实际写入仍受现有写门禁保护。',
 ].join('\n');

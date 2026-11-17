@@ -213,6 +213,11 @@ export interface TurnOptions {
   effort?: ReasoningEffort;
 }
 
+export interface SteerOptions {
+  /** Internal bridge nudges must not re-attach project skills. */
+  includeSkills?: boolean;
+}
+
 export interface AgentThread {
   /** backend session id（codex 的 thread id，其它后端可能是 session UUID）——持久化进
    * SessionRecord.sessionId，重启后经 resumeThread 找回同一会话。 */
@@ -233,7 +238,7 @@ export interface AgentThread {
   clearGoal(): Promise<void>;
   /** inject input into the in-flight turn (引导) */
   readonly supportsSteer?: boolean;
-  steer(input: AgentInput, expectedTurnId: string): Promise<void>;
+  steer(input: AgentInput, expectedTurnId: string, opts?: SteerOptions): Promise<void>;
   /** interrupt the in-flight turn (watchdog 中止) */
   abort(turnId: string): Promise<void>;
   /** Summarize the thread's history to free context (thread/compact/start) and

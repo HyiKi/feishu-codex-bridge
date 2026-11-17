@@ -145,6 +145,15 @@ export class WriteGate {
     return this.grants.has(commandKey(threadId, command));
   }
 
+  /** True while a command from this thread is waiting for an admin decision. */
+  hasPendingFor(threadId: string): boolean {
+    const prefix = `${threadId}\u0000`;
+    for (const entry of this.pending.values()) {
+      if (entry.key.startsWith(prefix)) return true;
+    }
+    return false;
+  }
+
   approverFor(ctx: (threadId: string) => WriteGateRunContext | undefined, cwd: string | undefined): CommandApprover {
     return async (req) => {
       const verdict = classifyCommand(req.command, { cwd: req.cwd ?? cwd });

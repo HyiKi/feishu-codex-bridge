@@ -55,8 +55,8 @@ export interface Project {
    * for an admin to approve them on a Feishu card, with no time limit.
    * Codex backend only. */
   writeGate?: boolean;
-  /** Per-turn clarification policy: attach the grilling skill to every turn and
-   * ask before acting when a task has side effects or unresolved decisions.
+  /** Per-turn clarification policy: ask only on a real conflict or unresolved
+   * ambiguity, framed around system/code rules; no interview-style clarification.
    * Prompt-level only; the write gate remains the hard boundary. Codex only. */
   clarifyBeforeAct?: boolean;
   /** agent backend id for this project (see src/agent/index.ts registry).

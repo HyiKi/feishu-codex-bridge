@@ -1,13 +1,33 @@
-import { describe, expect, it } from 'vitest';
-import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import { rmSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import { paths } from '../src/config/paths';
 import {
   cleanFileName,
+  collectInboundImages,
+  collectInboundFilesWithStatus,
+  fileRefFromContent,
   imageKeysFromContent,
   messageHasFiles,
   messageHasImages,
   stripFileTokens,
   weaveFileManifest,
 } from '../src/bot/media';
+
+// Keep inbound downloads inside a throwaway directory, never the real daemon state.
+vi.mock('../src/config/paths', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const root = mkdtempSync(join(tmpdir(), 'bridge-media-test-'));
+  return { paths: { inboundDir: join(root, 'inbound'), mediaDir: join(root, 'media') } };
+});
+
+afterAll(() => {
+  rmSync(dirname(paths.inboundDir), { recursive: true, force: true });
+});
 
 function msg(overrides: Partial<NormalizedMessage> = {}): NormalizedMessage {
   return {
@@ -81,8 +101,168 @@ describe('messageHasFiles', () => {
     expect(messageHasFiles(msg())).toBe(false);
     expect(messageHasFiles(msg({ resources: [{ type: 'image', fileKey: 'img_1' }] }))).toBe(false);
   });
-  it('is false for merge_forward (its sub-message files are never servable)', () => {
-    expect(messageHasFiles(msg({ rawContentType: 'merge_forward', resources: [] }))).toBe(false);
+  it('is true for merge_forward containing a file placeholder', () => {
+    expect(
+      messageHasFiles(
+        msg({
+          rawContentType: 'merge_forward',
+          content: '<forwarded_messages>\n<file key="file_v3_x" name="a.xlsx"/>\n</forwarded_messages>',
+        }),
+      ),
+    ).toBe(true);
+  });
+  it('is false for merge_forward without a file placeholder', () => {
+    expect(
+      messageHasFiles(
+        msg({
+          rawContentType: 'merge_forward',
+          content: '<forwarded_messages>\n张三:\n    看一下这个\n</forwarded_messages>',
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('fileRefFromContent', () => {
+  it('extracts file_key and file_name from a file sub-message', () => {
+    expect(
+      fileRefFromContent('om_child', 'file', JSON.stringify({ file_key: 'file_v3_x', file_name: '报价.xlsx' })),
+    ).toEqual({
+      messageId: 'om_child',
+      fileKey: 'file_v3_x',
+      fileName: '报价.xlsx',
+    });
+  });
+
+  it('ignores non-file messages, missing keys, and bad JSON', () => {
+    expect(fileRefFromContent('om_child', 'text', JSON.stringify({ file_key: 'k' }))).toBeUndefined();
+    expect(fileRefFromContent('om_child', 'file', JSON.stringify({ file_name: 'a.xlsx' }))).toBeUndefined();
+    expect(fileRefFromContent('om_child', 'file', 'not json')).toBeUndefined();
+  });
+});
+
+describe('collectInboundFilesWithStatus', () => {
+  const forwardedMsg = (): NormalizedMessage =>
+    msg({
+      messageId: 'om_parent',
+      rawContentType: 'merge_forward',
+      content: '<forwarded_messages>\n<file key="file_v3_x" name="报价.xlsx"/>\n</forwarded_messages>',
+    });
+
+  const subMessageItems = [
+    { message_id: 'om_parent', msg_type: 'merge_forward' },
+    {
+      message_id: 'om_child',
+      msg_type: 'file',
+      body: { content: JSON.stringify({ file_key: 'file_v3_x', file_name: '报价.xlsx' }) },
+    },
+  ];
+
+  it('downloads a merge-forward file using the outer merge-forward message id', async () => {
+    const resourceGet = vi.fn(async () => ({
+      headers: { 'content-length': '5' },
+      writeFile: (file: string) => writeFile(file, 'hello'),
+    }));
+    const channel = {
+      rawClient: {
+        im: {
+          v1: {
+            message: { get: vi.fn(async () => ({ data: { items: subMessageItems } })) },
+            messageResource: { get: resourceGet },
+          },
+        },
+      },
+    } as unknown as LarkChannel;
+
+    const result = await collectInboundFilesWithStatus(channel, forwardedMsg());
+
+    expect(result.failed).toBe(0);
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0]!.name).toBe('报价.xlsx');
+    expect(await readFile(result.files[0]!.path, 'utf8')).toBe('hello');
+    expect(resourceGet).toHaveBeenCalledWith({
+      path: { message_id: 'om_parent', file_key: 'file_v3_x' },
+      params: { type: 'file' },
+    });
+  });
+
+  it('counts a rejected merge-forward resource without throwing', async () => {
+    const channel = {
+      rawClient: {
+        im: {
+          v1: {
+            message: { get: vi.fn(async () => ({ data: { items: subMessageItems } })) },
+            messageResource: {
+              get: vi.fn(async () => {
+                throw new Error('Feishu rejects merge_forward child resources');
+              }),
+            },
+          },
+        },
+      },
+    } as unknown as LarkChannel;
+
+    await expect(collectInboundFilesWithStatus(channel, forwardedMsg())).resolves.toEqual({ files: [], failed: 1 });
+  });
+
+  it('counts a failed sub-message lookup as an unreadable attachment', async () => {
+    const channel = {
+      rawClient: {
+        im: {
+          v1: {
+            message: {
+              get: vi.fn(async () => {
+                throw new Error('message.get failed');
+              }),
+            },
+            messageResource: { get: vi.fn() },
+          },
+        },
+      },
+    } as unknown as LarkChannel;
+
+    await expect(collectInboundFilesWithStatus(channel, forwardedMsg())).resolves.toEqual({ files: [], failed: 1 });
+  });
+});
+
+describe('collectInboundImages', () => {
+  it('downloads a merge-forward image using the outer merge-forward message id', async () => {
+    const forwarded = msg({
+      messageId: 'om_parent',
+      rawContentType: 'merge_forward',
+      content: '<forwarded_messages>\n![image](img_v3_x)\n</forwarded_messages>',
+    });
+    const subMessageItems = [
+      { message_id: 'om_parent', msg_type: 'merge_forward' },
+      {
+        message_id: 'om_child',
+        msg_type: 'image',
+        body: { content: JSON.stringify({ image_key: 'img_v3_x' }) },
+      },
+    ];
+    const resourceGet = vi.fn(async () => ({
+      headers: { 'content-type': 'image/png' },
+      writeFile: (file: string) => writeFile(file, 'image-bytes'),
+    }));
+    const channel = {
+      rawClient: {
+        im: {
+          v1: {
+            message: { get: vi.fn(async () => ({ data: { items: subMessageItems } })) },
+            messageResource: { get: resourceGet },
+          },
+        },
+      },
+    } as unknown as LarkChannel;
+
+    const images = await collectInboundImages(channel, forwarded);
+
+    expect(images).toHaveLength(1);
+    expect(await readFile(images[0]!, 'utf8')).toBe('image-bytes');
+    expect(resourceGet).toHaveBeenCalledWith({
+      path: { message_id: 'om_parent', file_key: 'img_v3_x' },
+      params: { type: 'image' },
+    });
   });
 });
 

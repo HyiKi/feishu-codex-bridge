@@ -128,7 +128,30 @@ afterEach(async () => {
 const until = (check: () => void) => vi.waitFor(check, { interval: 5 });
 
 describe('message queue lifecycle', () => {
-  it('attaches the grilling skill and clarification policy when the project opts in', async () => {
+  it('soft-nudges once after eight silent tool calls without reattaching skills', async () => {
+    const run = thread();
+    fake.backend.resumeThread.mockResolvedValue(run.t);
+    const o = setup('queue');
+
+    await o.onMessage(message('analyze this'));
+    await until(() => expect(run.consumed).toHaveLength(1));
+    for (let i = 0; i < 8; i += 1) {
+      run.emit({ type: 'tool_use', itemId: `tool-${i}`, title: `query-${i}`, kind: 'tool' });
+    }
+    await until(() => expect(run.t.steer).toHaveBeenCalledTimes(1));
+    expect(run.t.steer).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining('Bridge 运行提示') }),
+      'turn-1',
+      { includeSkills: false },
+    );
+
+    run.emit({ type: 'tool_use', itemId: 'tool-9', title: 'query-9', kind: 'tool' });
+    await Promise.resolve();
+    expect(run.t.steer).toHaveBeenCalledTimes(1);
+    run.turns[0]!.resolve();
+  });
+
+  it('attaches the system-rule clarification policy without attaching a skill', async () => {
     fake.clarifyBeforeAct = true;
     const run = thread();
     fake.backend.resumeThread.mockResolvedValue(run.t);
@@ -138,9 +161,10 @@ describe('message queue lifecycle', () => {
     await until(() => expect(fake.backend.resumeThread).toHaveBeenCalledOnce());
 
     expect(fake.backend.resumeThread).toHaveBeenCalledWith(expect.objectContaining({
-      skills: [{ name: 'grilling', path: expect.stringContaining('/.agents/skills/grilling/SKILL.md') }],
       extraInstructions: expect.stringContaining('执行前置澄清'),
     }));
+    const resumedOptions = fake.backend.resumeThread.mock.calls[0]?.[0] as { skills?: unknown } | undefined;
+    expect(resumedOptions?.skills).toBeUndefined();
 
     run.turns[0]!.resolve();
   });

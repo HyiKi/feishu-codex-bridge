@@ -16,6 +16,7 @@ import type {
   PermissionMode,
   ReasoningEffort,
   ResumeThreadOptions,
+  SteerOptions,
   StartThreadOptions,
   ThreadHistory,
   ThreadSummary,
@@ -484,11 +485,11 @@ class CodexThread implements AgentThread {
     await this.client.request('thread/goal/clear', { threadId: this.sessionId });
   }
 
-  async steer(input: AgentInput, expectedTurnId: string): Promise<void> {
+  async steer(input: AgentInput, expectedTurnId: string, opts?: SteerOptions): Promise<void> {
     await this.client.request('turn/steer', {
       threadId: this.sessionId,
       expectedTurnId,
-      input: toUserInput(input, this.skills),
+      input: toUserInput(input, opts?.includeSkills === false ? [] : this.skills),
     }, 30_000);
   }
 

@@ -102,6 +102,8 @@ export const paths = {
   },
   secretsFile: join(appDir, 'secrets.enc'),
   keystoreSaltFile: join(appDir, '.keystore.salt'),
+  /** 首次初始化后固定不变的密钥派生身份；避免 DHCP/网络切换导致 hostname 变化后无法解密。 */
+  keystoreIdentityFile: join(appDir, '.keystore.identity'),
   npmCacheDir: join(appDir, 'npm-cache'),
   /**
    * 按需后端（npm-ondemand 包）私装目录：一个扁平

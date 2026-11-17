@@ -12,8 +12,8 @@ import {
 const CHAT = 'oc_chat';
 const CARD_MSG = 'om_card';
 const run: WriteGateRunContext = { chatId: CHAT, replyTo: 'om_user', replyInThread: true, requesterOpenId: 'ou_user' };
-const WRITE = 'mcp-call call dms-mcp-server createDataChangeOrder --args-file -';
-const READ = 'mcp-call call dms-mcp-server getDatabase --args {}';
+const WRITE = 'curl -X POST http://a';
+const READ = 'mcp-call call erp-warebase query --args \'{"sql":"select 1"}\'';
 
 function flush(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
@@ -95,7 +95,7 @@ describe('WriteGate', () => {
     expect(cardCreate).toHaveBeenCalledTimes(1);
     expect(reply.mock.calls[0]![0].path.message_id).toBe('om_user');
     expect(reply.mock.calls[0]![0].data.reply_in_thread).toBe(true);
-    expect(lastCard()).toContain('createDataChangeOrder');
+    expect(lastCard()).toContain('curl -X POST');
     expect(lastCard()).toContain('<at id=ou_admin></at>');
     expect(lastCard()).toContain('不设时限');
     expect(gate.pendingCount).toBe(1);
@@ -107,6 +107,17 @@ describe('WriteGate', () => {
     await approver()(req(`/bin/zsh -lc '${WRITE}'`), signal);
     await flush();
     expect(cardCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports pending approvals by thread for the tool-loop guard', async () => {
+    expect(gate.hasPendingFor('t1')).toBe(false);
+    await approver()(req(WRITE), signal);
+    await flush();
+    expect(gate.hasPendingFor('t1')).toBe(true);
+    expect(gate.hasPendingFor('t2')).toBe(false);
+    await click(WRITE_GATE_DENY, lastId(), 'ou_admin');
+    await flush();
+    expect(gate.hasPendingFor('t1')).toBe(false);
   });
 
   it('an admin approval grants that exact script once and wakes the agent', async () => {
@@ -127,7 +138,7 @@ describe('WriteGate', () => {
     await flush();
     await click(WRITE_GATE_APPROVE, lastId(), 'ou_admin');
     await flush();
-    const other = 'mcp-call call dms-mcp-server approveOrder --args {}';
+    const other = 'curl -X POST http://b';
     await expect(approver()(req(other), signal)).resolves.toBe(false);
     await expect(approver()({ ...req(WRITE), threadId: 't2' }, signal)).resolves.toBe(false);
     await expect(approver()(req(WRITE), signal)).resolves.toBe(true);

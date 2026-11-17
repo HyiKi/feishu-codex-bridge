@@ -114,8 +114,9 @@ export interface RunCardState {
   cardKey?: string;
   /** topic thread id (known after the topic is created) */
   threadId?: string;
-  /** Who sent the message that started this turn. Also mentioned by the
-   * bridge in the outgoing card; only they or an admin may stop the run. */
+  /** Who sent the message that started this turn; only they or an admin may
+   * stop the run. The completion @ is sent as a separate native post, not
+   * rendered inside this card. */
   requesterOpenId?: string;
   /** drop tool blocks from the render (pref) */
   showTools?: boolean;
@@ -234,8 +235,6 @@ function renderRunning(state: RunState, rc: RunCardState): CardElement[] {
   else if (state.startedAt !== undefined) elements.push(md(`<font color='grey'>${title}</font>`));
   const answer = answerIdx >= 0 ? (state.blocks[answerIdx] as Extract<Block, { kind: 'text' }>).content : '';
   if (answer) {
-    const mention = requesterMention(rc, answer);
-    if (mention) elements.push(mention);
     elements.push(...renderRichText(answer, rc.images, { streamTailId: ANSWER_EID, live: true }));
   }
 
@@ -304,8 +303,6 @@ function renderTerminal(state: RunState, rc: RunCardState): CardElement[] {
 
   const answerIdx = lastTextIndex(state.blocks);
   const answer = rc.localFiles?.text ?? (answerIdx >= 0 ? (state.blocks[answerIdx] as Extract<Block, { kind: 'text' }>).content.trim() : '');
-  const mention = requesterMention(rc, answer);
-  if (mention) elements.push(mention);
   const answerElements = rc.localFiles ? renderFileAnswer(rc.localFiles, rc.images)
     : hasMarkdownTable(answer) ? renderReport(answer, { images: rc.images }) : renderRichText(answer, rc.images);
 
@@ -355,20 +352,6 @@ function renderTerminal(state: RunState, rc: RunCardState): CardElement[] {
   if (mEl) elements.push(mEl);
 
   return elements;
-}
-
-/**
- * The Bridge's own @ of this turn's sender. Done here, in the outgoing card,
- * rather than asking the agent to repeat an id it was told about: the reply then
- * always notifies whoever actually sent the current message. Avoid a duplicate
- * when the answer already opens with the same mention.
- */
-function requesterMention(rc: RunCardState, answer: string): CardElement | null {
-  const id = rc.requesterOpenId;
-  if (!id) return null;
-  const start = answer.trimStart();
-  if (start.startsWith(`<at id=${id}`) || start.startsWith(`<at id="${id}"`)) return null;
-  return md(`<at id=${id}></at>`);
 }
 
 /**

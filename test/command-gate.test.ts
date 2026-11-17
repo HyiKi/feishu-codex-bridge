@@ -6,26 +6,39 @@ const files: Record<string, string> = {};
 const readText = (path: string): string | undefined => files[path];
 const gated = (command: string, cwd = '/work'): boolean => classifyCommand(command, { cwd, readText }).gated;
 
-describe('command gate: DMS (mcp-call dms-mcp-server)', () => {
-  it.each(['createDataChangeOrder', 'submitOrderApproval', 'approveOrder'])('gates %s', (tool) => {
-    expect(gated(`mcp-call call dms-mcp-server ${tool} --args '{"a":1}'`)).toBe(true);
-    expect(gated(zsh(`/Users/x/.local/bin/mcp-call call dms-mcp-server ${tool} --args-file -`))).toBe(true);
+describe('command gate: DMS tools are not gated', () => {
+  it.each([
+    'createDataChangeOrder',
+    'submitOrderApproval',
+    'approveOrder',
+    'addInstance',
+    'getOrderInfo',
+    'getDatabase',
+    'getInstance',
+    'listInstances',
+    'listTables',
+    'searchDatabase',
+    'executeScript',
+    'getTableDetailInfo',
+    'askDatabase',
+    'generateSql',
+    'fixSql',
+    'optimizeSql',
+    'answerSqlSyntax',
+    'somethingNew',
+  ])('lets %s through', (tool) => {
+    expect(gated(`mcp-call call dms-mcp-server ${tool} --args '{}'`)).toBe(false);
+    expect(gated(zsh(`/Users/x/.local/bin/mcp-call call dms-mcp-server ${tool} --args-file -`))).toBe(false);
   });
-  it.each(['getDatabase', 'listTables', 'searchDatabase', 'getOrderInfo', 'executeScript', 'getTableDetailInfo'])(
-    'lets %s through',
-    (tool) => {
-      expect(gated(`mcp-call call dms-mcp-server ${tool} --args '{}'`)).toBe(false);
-    },
-  );
-  it('gates an unknown DMS tool rather than guessing it is a read', () => {
-    expect(gated('mcp-call call dms-mcp-server somethingNew --args {}')).toBe(true);
+  it('gates Agent Data Gateway because it is not enabled', () => {
+    expect(gated("mcp-call call dms-dgate exec_sql --args '{}'")).toBe(true);
   });
   it('gates a call whose server or tool cannot be resolved statically', () => {
     expect(gated('mcp-call call "$SRV" "$TOOL" --args {}')).toBe(true);
   });
   it('does not gate listing or tool discovery', () => {
     expect(gated('mcp-call servers')).toBe(false);
-    expect(gated('mcp-call tools dms-mcp-server --schema')).toBe(false);
+    expect(gated('mcp-call tools erp-warebase --schema')).toBe(false);
   });
 });
 
@@ -85,7 +98,7 @@ describe('command gate: erp-dev-database execute_sql', () => {
     expect(gated(zsh(script))).toBe(true);
   });
   it('does not read the write from a different call', () => {
-    const script = `${call('select 1')}\nmcp-call call dms-mcp-server getDatabase --args '{"note":"update"}'`;
+    const script = `${call('select 1')}\nmcp-call call erp-warebase query --args '{"note":"update"}'`;
     expect(gated(zsh(script))).toBe(false);
   });
 });
@@ -182,7 +195,7 @@ describe('command gate: interpreters and scripts', () => {
     files['/work/curl.sh'] = '#!/bin/sh\ncurl -X POST http://a/b';
     expect(gated(zsh('python3 push.py'))).toBe(true);
     expect(gated(zsh('python3 read.py'))).toBe(false);
-    expect(gated(zsh('node call.mjs'))).toBe(true);
+    expect(gated(zsh('node call.mjs'))).toBe(false);
     expect(gated(zsh('bash ./curl.sh'))).toBe(true);
     expect(gated(zsh('./curl.sh'))).toBe(true);
   });
@@ -194,9 +207,9 @@ describe('command gate: interpreters and scripts', () => {
 
 describe('command gate: verdict details', () => {
   it('explains why a command was gated', () => {
-    const verdict = classifyCommand('mcp-call call dms-mcp-server approveOrder --args {}', { cwd: '/work', readText });
+    const verdict = classifyCommand('curl -X POST http://a', { cwd: '/work', readText });
     expect(verdict.gated).toBe(true);
-    expect(verdict.reasons.join(' ')).toContain('approveOrder');
+    expect(verdict.reasons.join(' ')).toContain('curl');
   });
   it('returns an empty verdict for plain reads', () => {
     expect(classifyCommand('ls', { cwd: '/work', readText })).toEqual({ gated: false, reasons: [] });

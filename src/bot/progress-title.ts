@@ -3,11 +3,12 @@ import type { AgentEvent } from '../agent/types';
 /** Keep the status line compact enough for mobile cards. */
 export const PROGRESS_TITLE_MAX_CHARS = 16;
 
-const DEFAULT_MIN_INTERVAL_MS = 5_000;
+const DEFAULT_MIN_INTERVAL_MS = 8_000;
 /** The first title call warms the isolated Codex sidecar/model and can take
- * ~17s on this machine; warmed calls are ~2.5s. Keep it background-only. */
-const DEFAULT_TIMEOUT_MS = 30_000;
-const DEFAULT_MAX_GENERATIONS = 12;
+ * ~17s on this machine; warmed calls are ~2.5s. Keep it background-only and
+ * fail fast: a missing title is preferable to competing with the main turn. */
+const DEFAULT_TIMEOUT_MS = 20_000;
+const DEFAULT_MAX_GENERATIONS = 4;
 const GOAL_SOURCE_MAX_CHARS = 800;
 const REASONING_SOURCE_MAX_CHARS = 1_200;
 const TOOL_SOURCE_MAX_CHARS = 120;

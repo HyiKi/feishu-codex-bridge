@@ -6,7 +6,7 @@ import { resolveCodexBin } from './locate';
 
 /** Cold start includes app-server + model warmup (~17s measured); reuse makes
  * subsequent title calls ~2.5s. The main run is never blocked by this deadline. */
-const DEFAULT_TIMEOUT_MS = 25_000;
+const DEFAULT_TIMEOUT_MS = 20_000;
 const IDLE_CLOSE_MS = 10 * 60_000;
 
 export interface ProgressTitleWorkerInput extends GenerateSessionTitleOptions {

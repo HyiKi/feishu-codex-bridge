@@ -33,6 +33,7 @@ vi.mock('../src/config/paths', async () => {
       botsFile: join(appDir, 'bots.json'),
       secretsFile: join(appDir, 'secrets.enc'),
       keystoreSaltFile: join(appDir, '.keystore.salt'),
+      keystoreIdentityFile: join(appDir, '.keystore.identity'),
       secretsGetterScript: join(appDir, 'secrets-getter'),
       get configFile(): string {
         return join(currentBotDir, 'config.json');

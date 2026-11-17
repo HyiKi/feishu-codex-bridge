@@ -340,63 +340,42 @@ describe('buildRunCard — terminal collapse', () => {
   });
 });
 
-describe('buildRunCard — reply mentions this turn sender', () => {
+describe('buildRunCard — sender notification is separate from the card', () => {
   const running = (): RunState => run([{ type: 'text_delta', itemId: 'a', delta: 'working…' }]);
   const done = (text = 'done'): RunState =>
     run([{ type: 'text', itemId: 'a', text }, { type: 'done', turnId: 'turn-1' }]);
   const mention = (id: string): string => `<at id=${id}></at>`;
 
-  it('mentions the current sender on running and terminal cards', () => {
+  it('never injects a sender mention into running or terminal cards', () => {
     for (const rs of [running(), done()]) {
       const json = JSON.stringify(buildRunCard({ rs, requesterOpenId: 'ou_second' }));
-      expect(json).toContain(mention('ou_second'));
-      expect(json).not.toContain(mention('ou_first'));
+      expect(json).not.toContain('<at id=');
     }
   });
 
-  it('still mentions the sender on a terminal card with no answer', () => {
+  it('does not inject a mention even when the terminal card has no answer', () => {
     const rs = run([
       { type: 'tool_use', itemId: 't1', title: 'only tool' },
       { type: 'tool_result', itemId: 't1', exitCode: 0 },
       { type: 'done', turnId: 'turn-1' },
     ]);
     expect(JSON.stringify(buildRunCard({ rs, requesterOpenId: 'ou_second' })))
-      .toContain(mention('ou_second'));
+      .not.toContain('<at id=');
   });
 
-  it('does not mention anyone without a sender id', () => {
-    expect(JSON.stringify(buildRunCard({ rs: done() }))).not.toContain('<at id=');
-  });
-
-  it('does not duplicate a mention already opening the answer', () => {
-    for (const answer of [
-      `${mention('ou_second')} 已完成`,
-      `<at id="ou_second"></at> 已完成`,
-      `  ${mention('ou_second')} 已完成`,
-    ]) {
-      const content = bodyEls(buildRunCard({ rs: done(answer), requesterOpenId: 'ou_second' }))
-        .map((e) => String(e.content ?? ''))
-        .join('\n');
-      expect(content.match(/<at id=["']?ou_second["']?><\/at>/g) ?? []).toHaveLength(1);
-    }
-  });
-
-  it('adds the sender even if the answer mentions someone else', () => {
-    const card = buildRunCard({
-      rs: done(`${mention('ou_first')} 请看结果`),
-      requesterOpenId: 'ou_second',
-    });
+  it('preserves a mention authored by the agent inside the answer', () => {
+    const card = buildRunCard({ rs: done(`${mention('ou_first')} 请看结果`), requesterOpenId: 'ou_second' });
     expect(JSON.stringify(card)).toContain(mention('ou_first'));
-    expect(JSON.stringify(card)).toContain(mention('ou_second'));
+    expect(JSON.stringify(card)).not.toContain(mention('ou_second'));
   });
 
-  it('applies the same sender rule to goal cards', () => {
+  it('does not inject a sender mention into goal cards', () => {
     expect(JSON.stringify(buildRunCard({
       rs: running(),
       cardKey: 'g1',
       goalControls: true,
       requesterOpenId: 'ou_second',
-    }))).toContain(mention('ou_second'));
+    }))).not.toContain('<at id=');
   });
 });
 
