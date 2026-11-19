@@ -1,8 +1,23 @@
-import { createReadonlyAdminService } from '../../admin/service';
+import { createReadonlyAdminService, NotWiredYetError } from '../../admin/service';
+import { checkVonvonMigration, migratedNote, printMigratedNote } from '../../core/vonvon-migration';
 import { readWebConsole, stableWebConsoleToken } from '../../web/discovery';
 import { createWebServer } from '../../web/server';
 import { openUrl } from '../../utils/open-url';
 import { spawnDaemonControl } from './daemon-control';
+
+/**
+ * 只读预览里「启动」按钮的执行器。bot 已经迁到 Vonvon Bot（或者看不清迁没迁）时和 `start`
+ * 一样不启动：detached helper 那头也会拒，但那是事后的、用户看不到，所以这里先抛
+ * {@link NotWiredYetError}（HTTP 501），前端把原因显示成提示，而不是「启动已发起」。
+ * `opts` 仅测试注入。
+ */
+export function startDaemonFromPreview(
+  opts: { file?: string; platform?: NodeJS.Platform; spawn?: () => void } = {},
+): void {
+  const state = checkVonvonMigration(opts.file, opts.platform);
+  if (state.kind !== 'clear') throw new NotWiredYetError('▶️ 启动 daemon', migratedNote(state));
+  (opts.spawn ?? (() => spawnDaemonControl('start')))();
+}
 
 /**
  * `feishu-codex-bridge web [--port]` —— 本机 Web 控制台。
@@ -28,6 +43,9 @@ export async function runWeb(opts: { port?: number } = {}): Promise<void> {
     return;
   }
 
+  // bot 已经迁到 Vonvon Bot：预览仍可看，但「启动」不会拉起 bridge，先说清楚。
+  printMigratedNote();
+
   // 预览默认用**临时端口**（port=0），绝不抢规范端口 51847——那是 daemon 控制台的权威
   // 端口（见 web/mount.ts）。这样「点启动 → daemon 起来占 51847 → 前端自动跳到 51847」，
   // 之后重启都稳定在 51847，不再换来换去。用户可 --port 显式指定。
@@ -45,7 +63,7 @@ export async function runWeb(opts: { port?: number } = {}): Promise<void> {
   // 没启动只读，但放行两个宿主级动作：启动 + 更新（升级 npm 包；没 daemon 在跑时
   // doUpdate 装最新版即可，重启那步是 no-op）。其余写仍 501。
   const service = createReadonlyAdminService({
-    startDaemon: () => spawnDaemonControl('start'),
+    startDaemon: () => startDaemonFromPreview(),
     applyUpdate: () => spawnDaemonControl('update'),
   });
   const web = createWebServer({ service, token: stableWebConsoleToken(), liveConsole: () => readWebConsole() });

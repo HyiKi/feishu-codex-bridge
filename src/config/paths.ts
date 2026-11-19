@@ -73,6 +73,14 @@ export const paths = {
   get processesFile(): string {
     return join(currentBotDir, 'processes.json');
   },
+  /** Vonvon Bot 导入这台电脑的 bot 之后写下的迁移标记（顶层，整台机器一份）。
+   * 存在即表示 bot 已迁走，bridge 不再启动，见 core/vonvon-migration.ts。 */
+  vonvonMigrationFile: join(appDir, 'vonvon-migration.json'),
+  /** 「Vonvon Bot 推荐」私聊已发给主人的记录（当前 bot；每个 bot 只发一次），
+   * 见 core/vonvon-notice.ts。 */
+  get vonvonNoticeFile(): string {
+    return join(currentBotDir, 'vonvon-notice.json');
+  },
   /** 云文档评论 @bot 的可编辑提示词 master 文件（当前 bot）。用户直接编辑这一份，
    * 桥在每条评论运行前把它同步进该文档的评论工作目录（AGENTS.md / CLAUDE.md）。
    * 首次缺失时由 bot/comments.ts 用内置默认模板自动落地。 */

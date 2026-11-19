@@ -23,7 +23,11 @@ vi.mock('../src/agent', () => ({ detectAgents: async () => [{ backends: [{ avail
 vi.mock('../src/config/store', () => ({ loadConfig: async () => ({ accounts: { app: { id: 'cli_test', secret: 'test', tenant: 'feishu' } } }) }));
 vi.mock('../src/config/secret-resolver', () => ({ resolveAppSecret: async () => 'test' }));
 vi.mock('../src/config/keystore', () => ({ setSecret: vi.fn() }));
-vi.mock('../src/config/paths', () => ({ useBotDir: vi.fn() }));
+// 迁移标记指向一个不存在的路径：start 的入口闸读不到标记，照常往下走。
+vi.mock('../src/config/paths', () => ({
+  useBotDir: vi.fn(),
+  paths: { vonvonMigrationFile: '/nonexistent-bridge-dir-for-test/vonvon-migration.json' },
+}));
 vi.mock('../src/bot/wizard', () => ({ runRegistrationWizard: vi.fn() }));
 vi.mock('../src/config/bots', () => {
   const bot = { name: 'test', appId: 'cli_test', tenant: 'feishu', active: true };

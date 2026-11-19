@@ -1,5 +1,7 @@
 import { ensureOnboarded } from '../../bot/onboarding';
 import { activeBots, loadBots } from '../../config/bots';
+import { printMigratedNote, refuseIfMigrated } from '../../core/vonvon-migration';
+import { printVonvonRecommendation } from '../../core/vonvon-notice';
 import { getServiceAdapter, type ServiceStatus } from '../../service/adapter';
 import { readWebConsole, type WebConsoleRecord } from '../../web/discovery';
 
@@ -15,6 +17,8 @@ import { readWebConsole, type WebConsoleRecord } from '../../web/discovery';
  * active set we check each bot sequentially so its diagnostic output stays together.
  */
 export async function runStart(): Promise<void> {
+  // bot 已经迁到 Vonvon Bot 就不装服务、不进向导：先看标记，其余什么都不碰。
+  if (refuseIfMigrated('start')) return;
   const active = activeBots(await loadBots());
 
   if (active.length === 0) {
@@ -28,6 +32,7 @@ export async function runStart(): Promise<void> {
       console.log('  下一步：运行 `feishu-codex-bridge web` 获取控制台登录链接，在浏览器里扫码创建第一个机器人。');
       console.log('  （建完机器人后它会自动成为活跃 bot，重启服务即上线。）');
       printStatus(status);
+      printVonvonRecommendation();
       return;
     }
     // Fresh / legacy single-bot install (TTY)：onboard (maybe scan-create) the
@@ -56,14 +61,17 @@ export async function runStart(): Promise<void> {
   const status = await getServiceAdapter().install();
   console.log(installedNote());
   printStatus(status);
+  printVonvonRecommendation();
 }
 
 export async function runStop(): Promise<void> {
   await getServiceAdapter().uninstall();
   console.log('✓ 后台服务已停止，并已关闭自启（已移除服务定义）。');
+  printMigratedNote();
 }
 
 export async function runRestart(): Promise<void> {
+  if (refuseIfMigrated('restart')) return;
   const status = await getServiceAdapter().restart();
   console.log('✓ 后台服务已重启。');
   printStatus(status);
@@ -76,6 +84,8 @@ export async function runStatus(): Promise<void> {
   // 文件（带 pid 活性校验）是 daemon 级的「确有进程在跑」信号，补进来消除误导。
   const live = readWebConsole();
   printStatus(status, live);
+  // 已迁移的机器上提示迁移；没迁移才推荐（只在 macOS）。
+  if (!printMigratedNote()) printVonvonRecommendation();
 }
 
 export async function runLogs(follow: boolean): Promise<void> {
