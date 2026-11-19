@@ -1,17 +1,23 @@
 import type { AgentEvent } from '../agent/types';
 
-/** One gentle nudge per turn, after this many tool calls with no visible text. */
-export const TOOL_LOOP_NUDGE_THRESHOLD = 8;
+/** One progress check per turn, after this many tool calls with no visible text. */
+export const TOOL_LOOP_NUDGE_THRESHOLD = 20;
+
+/** A repeated identical tool call is a stronger loop signal than a long investigation. */
+export const TOOL_LOOP_REPEAT_THRESHOLD = 4;
 
 export const TOOL_LOOP_NUDGE_TEXT = [
-  '【Bridge 运行提示，不是新任务】',
-  '你已经连续调用多次工具，但还没有向用户输出结论。',
-  '请立即基于已有证据收敛：先给结论，再列出最多 3 条关键依据；如果证据仍不足，只补一个最关键的核验，然后回答。',
-  '不要再做无关的重复读取、重复查询或扩大排查范围。',
+  '【Bridge 进度检查，不是新任务，也不要求现在回答】',
+  '你已经连续执行多次工具调用，当前仍在调查中。',
+  '请先确认：是否还有会改变根因判断的关键边界条件尚未验证？',
+  '如果有，继续完成该决定性核验，不要因为这条提示提前下结论。',
+  '如果没有，直接回答；无法核验的关键事实必须明确写 unknown，不能写成“已确认”。',
+  '只停止重复读取或重复查询，不要停止新的决定性证据。',
 ].join('\n');
 
 export interface ToolLoopGuardOptions {
   threshold?: number;
+  repeatThreshold?: number;
   /** Allows the caller to delay the nudge while a write approval is pending. */
   canNudge?: () => boolean;
 }
@@ -23,12 +29,16 @@ export interface ToolLoopGuardOptions {
  */
 export class ToolLoopGuard {
   private readonly threshold: number;
+  private readonly repeatThreshold: number;
   private readonly canNudge?: () => boolean;
   private toolCallCount = 0;
+  private lastToolSignature: string | undefined;
+  private repeatCount = 0;
   private nudged = false;
 
   constructor(opts: ToolLoopGuardOptions = {}) {
     this.threshold = opts.threshold ?? TOOL_LOOP_NUDGE_THRESHOLD;
+    this.repeatThreshold = opts.repeatThreshold ?? TOOL_LOOP_REPEAT_THRESHOLD;
     this.canNudge = opts.canNudge;
   }
 
@@ -47,12 +57,23 @@ export class ToolLoopGuard {
       (evt.type === 'text' && evt.text.trim())
     ) {
       this.toolCallCount = 0;
+      this.lastToolSignature = undefined;
+      this.repeatCount = 0;
       return false;
     }
     if (evt.type !== 'tool_use') return false;
 
     this.toolCallCount += 1;
-    if (this.nudged || this.toolCallCount < this.threshold) return false;
+    const signature = `${evt.title}\n${evt.detail ?? ''}`;
+    if (signature === this.lastToolSignature) {
+      this.repeatCount += 1;
+    } else {
+      this.lastToolSignature = signature;
+      this.repeatCount = 1;
+    }
+    const repeatedLoop = this.repeatCount >= this.repeatThreshold;
+    const longLoop = this.toolCallCount >= this.threshold;
+    if (this.nudged || (!repeatedLoop && !longLoop)) return false;
     if (this.canNudge && !this.canNudge()) return false;
 
     this.nudged = true;

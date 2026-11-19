@@ -7,6 +7,7 @@ import { steerWithDeadline, isRejectedSteer } from './steer-delivery';
 import { TurnCardEvents, type SteerCardEvent } from './turn-card-events';
 import { runSegment } from '../card/run-segment';
 import { ToolLoopGuard, TOOL_LOOP_NUDGE_TEXT } from './tool-loop-guard';
+import { shouldRevalidate, withRevalidationGate } from './reasoning-guard';
 import {
   buildProgressTitlePrompt,
   ProgressTitleController,
@@ -1319,6 +1320,7 @@ export function createOrchestrator(
     const instructions: string[] = [];
     if (project?.writeGate) instructions.push(WRITE_GATE_INSTRUCTIONS);
     if (project?.clarifyBeforeAct) instructions.push(CLARIFY_BEFORE_ACT_INSTRUCTIONS);
+    if (project?.agentInstructions?.trim()) instructions.push(project.agentInstructions.trim());
     return {
       ...(project?.writeGate
         ? { commandApprover: writeGate.approverFor((threadId) => gateRuns.get(threadId), project.cwd) }
@@ -1731,6 +1733,16 @@ export function createOrchestrator(
               : specHistory
             : filterHistorySince(specHistory, prior?.lastSeenAt ?? 0);
           firstText = weaveThreadHistory(firstText, history);
+        }
+        if (shouldRevalidate({
+          text,
+          hasPrior: Boolean(prior),
+          modelChanged: Boolean(prior?.pendingRevalidation),
+        })) {
+          firstText = withRevalidationGate(firstText);
+          if (prior?.pendingRevalidation) {
+            await patchSession(sessionKey, { pendingRevalidation: false }).catch(() => undefined);
+          }
         }
         // Advance the high-water mark so the NEXT turn only catches up新消息.
         // (a brand-new session already wrote it in the upsert above.)
@@ -2424,7 +2436,11 @@ export function createOrchestrator(
         if (m && m.supportedEfforts.length && !m.supportedEfforts.includes(state.effort)) {
           state.effort = m.defaultEffort;
         }
-        await patchSession(state.threadId, { model: state.model, effort: state.effort });
+        await patchSession(state.threadId, {
+          model: state.model,
+          effort: state.effort,
+          ...(rec && rec.model !== state.model ? { pendingRevalidation: true } : {}),
+        });
         state.note = `✅ 已切换模型「${m?.displayName ?? option}」，下一轮生效`;
         return buildModelCard(state);
       });

@@ -7,6 +7,8 @@ import type { AgentEvent, AgentInput } from '../src/agent/types';
 const fake = vi.hoisted(() => ({
   groupMode: 'single' as 'single' | 'multi',
   clarifyBeforeAct: false,
+  agentInstructions: '',
+  pendingRevalidation: false,
   backend: { capabilities: { steer: true }, id: 'codex', listModels: vi.fn(async () => []), resumeThread: vi.fn(), startThread: vi.fn() },
   voice: vi.fn(async (_channel: unknown, msg: NormalizedMessage) => ({ text: '语音正文', voice: { messageId: msg.messageId, text: '语音正文', transcribed: true } })),
   live: vi.fn(),
@@ -20,11 +22,26 @@ vi.mock('../src/core/logger', () => ({ log: fake.log, withTrace: (_ctx: unknown,
 vi.mock('../src/agent', async (original) => ({ ...await original<object>(), createBackend: () => fake.backend }));
 vi.mock('../src/project/registry', async (original) => ({
   ...await original<object>(),
-  getProjectByChatId: async () => ({ name: 'test', chatId: 'chat', cwd: '/test', groupMode: fake.groupMode, clarifyBeforeAct: fake.clarifyBeforeAct }),
+  getProjectByChatId: async () => ({
+    name: 'test',
+    chatId: 'chat',
+    cwd: '/test',
+    groupMode: fake.groupMode,
+    clarifyBeforeAct: fake.clarifyBeforeAct,
+    agentInstructions: fake.agentInstructions,
+  }),
 }));
 vi.mock('../src/bot/session-store', async (original) => ({
   ...await original<object>(),
-  getSession: async () => ({ threadId: 'topic', chatId: 'chat', sessionId: 'host', backend: 'codex', cwd: '/test', summary: '' }),
+  getSession: async () => ({
+    threadId: 'topic',
+    chatId: 'chat',
+    sessionId: 'host',
+    backend: 'codex',
+    cwd: '/test',
+    summary: '',
+    pendingRevalidation: fake.pendingRevalidation,
+  }),
   patchSession: async () => undefined,
   upsertSession: async () => undefined,
 }));
@@ -113,6 +130,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   fake.groupMode = 'single';
   fake.clarifyBeforeAct = false;
+  fake.agentInstructions = '';
+  fake.pendingRevalidation = false;
   fake.voice.mockReset().mockImplementation(async (_channel, msg) => voiceResult('语音正文', msg.messageId));
   fake.backend.capabilities.steer = true;
   fake.final.mockReset().mockResolvedValue(true);
@@ -128,24 +147,24 @@ afterEach(async () => {
 const until = (check: () => void) => vi.waitFor(check, { interval: 5 });
 
 describe('message queue lifecycle', () => {
-  it('soft-nudges once after eight silent tool calls without reattaching skills', async () => {
+  it('soft-nudges once after twenty silent tool calls without reattaching skills', async () => {
     const run = thread();
     fake.backend.resumeThread.mockResolvedValue(run.t);
     const o = setup('queue');
 
     await o.onMessage(message('analyze this'));
     await until(() => expect(run.consumed).toHaveLength(1));
-    for (let i = 0; i < 8; i += 1) {
+    for (let i = 0; i < 20; i += 1) {
       run.emit({ type: 'tool_use', itemId: `tool-${i}`, title: `query-${i}`, kind: 'tool' });
     }
     await until(() => expect(run.t.steer).toHaveBeenCalledTimes(1));
     expect(run.t.steer).toHaveBeenCalledWith(
-      expect.objectContaining({ text: expect.stringContaining('Bridge 运行提示') }),
+      expect.objectContaining({ text: expect.stringContaining('Bridge 进度检查') }),
       'turn-1',
       { includeSkills: false },
     );
 
-    run.emit({ type: 'tool_use', itemId: 'tool-9', title: 'query-9', kind: 'tool' });
+    run.emit({ type: 'tool_use', itemId: 'tool-21', title: 'query-21', kind: 'tool' });
     await Promise.resolve();
     expect(run.t.steer).toHaveBeenCalledTimes(1);
     run.turns[0]!.resolve();
@@ -166,6 +185,44 @@ describe('message queue lifecycle', () => {
     const resumedOptions = fake.backend.resumeThread.mock.calls[0]?.[0] as { skills?: unknown } | undefined;
     expect(resumedOptions?.skills).toBeUndefined();
 
+    run.turns[0]!.resolve();
+  });
+
+  it('injects project agent instructions on resume', async () => {
+    fake.agentInstructions = 'ERP OWNER ROUTE';
+    const run = thread();
+    fake.backend.resumeThread.mockResolvedValue(run.t);
+    const o = setup('queue');
+
+    await o.onMessage(message('analyze this'));
+    await until(() => expect(fake.backend.resumeThread).toHaveBeenCalled());
+    expect(fake.backend.resumeThread).toHaveBeenCalledWith(
+      expect.objectContaining({ extraInstructions: expect.stringContaining('ERP OWNER ROUTE') }),
+    );
+    run.turns[0]!.resolve();
+  });
+
+  it('injects the revalidation gate on an explicit final-cause confirmation', async () => {
+    const run = thread();
+    fake.backend.resumeThread.mockResolvedValue(run.t);
+    const o = setup('queue');
+
+    await o.onMessage(message('确认最终原因给我'));
+    await until(() => expect(run.consumed).toHaveLength(1));
+    expect(run.consumed[0]?.text).toContain('Bridge 复验要求');
+    expect(run.consumed[0]?.text).toContain('确认最终原因给我');
+    run.turns[0]!.resolve();
+  });
+
+  it('injects the revalidation gate after a model switch for root-cause questions', async () => {
+    fake.pendingRevalidation = true;
+    const run = thread();
+    fake.backend.resumeThread.mockResolvedValue(run.t);
+    const o = setup('queue');
+
+    await o.onMessage(message('继续排查这个原因'));
+    await until(() => expect(run.consumed).toHaveLength(1));
+    expect(run.consumed[0]?.text).toContain('Bridge 复验要求');
     run.turns[0]!.resolve();
   });
 

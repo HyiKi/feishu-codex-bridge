@@ -27,6 +27,9 @@ export interface SessionRecord {
   titleJobKey?: string;
   model?: string;
   effort?: ReasoningEffort;
+  /** Set when the user switches models; the next root-cause turn must revalidate
+   * inherited conclusions instead of treating them as confirmed facts. */
+  pendingRevalidation?: boolean;
   /** first user message excerpt, for context */
   summary: string;
   /** createTime (epoch ms) of the most recent message woven into this session —

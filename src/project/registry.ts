@@ -75,6 +75,10 @@ export interface Project {
   /** 本项目新话题的默认推理强度。仅当所选 {@link defaultModel} 支持该 effort 时生效，
    * 否则回落该模型的 defaultEffort（claude 等不调 effort 的后端忽略）。 */
   defaultEffort?: ReasoningEffort;
+  /** Project-specific developer instructions appended on thread start/resume.
+   * Keep machine-local routing rules in the project registry, not in the shared
+   * bridge source. */
+  agentInstructions?: string;
 }
 
 /**
