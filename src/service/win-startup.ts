@@ -186,7 +186,7 @@ export async function installWinStartup(): Promise<ServiceStatus> {
     { encoding: 'utf8', windowsHide: true },
   );
   if (reg.status !== 0) {
-    throw new Error(`写入登录自启注册表项失败（exit ${reg.status ?? 'unknown'}）：${(reg.stderr || reg.stdout || '').trim()}`);
+    throw new Error(`写入登录自启注册表项失败（exit ${reg.status ?? '未提供'}）：${(reg.stderr || reg.stdout || '').trim()}`);
   }
 
   // Only launch if nothing is already running. Unlike launchd/systemd — whose

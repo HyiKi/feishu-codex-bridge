@@ -19,8 +19,8 @@ export async function steerWithDeadline(
     await Promise.race([
       thread.steer(input, turnId),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('Steer response timed out; delivery unknown')), timeoutMs);
-        abort = () => reject(new Error('Steer cancelled; delivery unknown'));
+        timer = setTimeout(() => reject(new Error('Steer response timed out; delivery state not confirmed')), timeoutMs);
+        abort = () => reject(new Error('Steer cancelled; delivery state not confirmed'));
         signal?.addEventListener('abort', abort, { once: true });
         if (signal?.aborted) abort();
       }),

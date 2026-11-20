@@ -178,7 +178,7 @@ export class AppServerClient {
     return new Promise<T>((resolve, reject) => {
       const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`RPC ${method} response timed out; delivery unknown`));
+        reject(new Error(`RPC ${method} response timed out; delivery state not confirmed`));
       }, timeoutMs);
       this.pending.set(id, {
         resolve: value => { clearTimeout(timer); resolve(value as T); },

@@ -29,4 +29,11 @@ describe('reasoning guard', () => {
     expect(text).toContain(REVALIDATION_GATE);
     expect(text.endsWith('确认最终原因')).toBe(true);
   });
+
+  it('keeps uncertainty local instead of recommending an unknown fallback', () => {
+    expect(REVALIDATION_GATE).toContain('尚未复验：<具体事实>');
+    expect(REVALIDATION_GATE).toContain('缺哪条决定性证据');
+    expect(REVALIDATION_GATE).not.toContain('或 unknown');
+    expect(REVALIDATION_GATE).not.toContain('禁止写“最终原因”');
+  });
 });

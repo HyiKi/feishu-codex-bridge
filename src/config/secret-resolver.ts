@@ -40,7 +40,7 @@ async function resolveSecretInput(
     case 'exec':
       return resolveExecRef(input, lookupProvider(secretsCfg, input), appId);
     default:
-      throw new Error(`unknown secret source: ${(input as { source?: string }).source}`);
+      throw new Error(`不支持的密钥来源：${(input as { source?: string }).source ?? '未提供来源'}`);
   }
 }
 

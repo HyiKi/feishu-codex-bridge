@@ -178,7 +178,7 @@ export async function tailLaunchdLogs(follow: boolean): Promise<void> {
         resolvePromise();
         return;
       }
-      reject(new Error(`tail 退出码 ${code ?? 'unknown'}`));
+      reject(new Error(`tail 退出码 ${code ?? '未提供'}`));
     });
   });
 }
@@ -226,5 +226,5 @@ function runLaunchctl(args: string[]): LaunchctlResult {
 
 function launchctlError(command: string, result: LaunchctlResult): Error {
   const output = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join('\n');
-  return new Error(`${command} 失败（exit ${result.status ?? 'unknown'}）${output ? `：${output}` : ''}`);
+  return new Error(`${command} 失败（exit ${result.status ?? '未提供'}）${output ? `：${output}` : ''}`);
 }

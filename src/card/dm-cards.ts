@@ -325,7 +325,7 @@ export function buildReconnectCard(conn: string): CardObject {
   const template = conn === 'connected' ? 'green' : 'orange';
   return card(
     [
-      md(`长连接状态：**${conn}**`),
+      md(`长连接状态：**${connectionLabel(conn)}**`),
       note('SDK 会自动重连；若长期断开，请在终端重跑 `feishu-codex-bridge run`（前台）或 `feishu-codex-bridge restart`（后台守护）。'),
       backToMenu(),
     ],
@@ -341,7 +341,7 @@ export function buildReconnectCard(conn: string): CardObject {
 export function buildRestartConfirmCard(conn: string): CardObject {
   return card(
     [
-      md(`长连接状态：**${conn}**`),
+      md(`长连接状态：**${connectionLabel(conn)}**`),
       note('重启会**断开当前所有会话**并重新拉起后台服务（约数秒，其间机器人短暂离线），完成后自动恢复。仅在长期断连或异常时才需要。'),
       actions([
         button('🔁 确认重启', { a: DM.restartDo }, 'danger'),
@@ -432,8 +432,8 @@ export interface DoctorInfo {
   eventConfigUrl?: string;
 }
 
-/** Friendly label for a long-connection state; unknown states show raw. */
-function connLabel(state: string): string {
+/** Friendly label for a long-connection state; unrecognized states use a concrete Chinese fallback. */
+export function connectionLabel(state: string): string {
   switch (state) {
     case 'connected':
       return '✅ 已连接';
@@ -443,6 +443,9 @@ function connLabel(state: string): string {
       return '↻ 重连中';
     case 'disconnected':
       return '❌ 已断开';
+    case 'unconfirmed':
+    case 'unknown':
+      return '状态未确认';
     default:
       return state;
   }
@@ -611,7 +614,7 @@ export function buildDoctorCard(i: DoctorInfo): CardObject {
       md(
         `- Codex：${i.codexOk ? `✅ 可用${i.codexVer ? `（${i.codexVer}）` : ''}` : '❌ 不可用（检查 CODEX_BIN / PATH）'}`,
       ),
-      md(`- 飞书长连接：${connLabel(i.conn)}`),
+      md(`- 飞书长连接：${connectionLabel(i.conn)}`),
       md(`- 机器人 open_id：${i.botOpenId ? `\`${i.botOpenId}\`` : '⚠️ 未能获取（凭据失效或网络不通）'}`),
       ...scopeDiagnosis(i),
       ...eventSubscriptionDiagnosis(i),

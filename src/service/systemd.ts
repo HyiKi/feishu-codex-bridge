@@ -85,7 +85,7 @@ function runSystemctl(args: string[]): SystemctlResult {
 
 function systemctlError(command: string, r: SystemctlResult): Error {
   const out = [r.stderr.trim(), r.stdout.trim()].filter(Boolean).join('\n');
-  return new Error(`${command} 失败（exit ${r.status ?? 'unknown'}）${out ? `：${out}` : ''}`);
+  return new Error(`${command} 失败（exit ${r.status ?? '未提供'}）${out ? `：${out}` : ''}`);
 }
 
 /**

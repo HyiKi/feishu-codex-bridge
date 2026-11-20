@@ -1197,7 +1197,7 @@ export function createOrchestrator(
           { replyTo: msg.messageId },
         )
         .catch(() => undefined);
-      log.info('intake', 'unknown-cmd', { name });
+      log.info('intake', 'unrecognized-cmd', { name });
       return;
     }
     startTopicDirectly(msg, text, project);
@@ -3008,7 +3008,7 @@ export function createOrchestrator(
     return {
       codexOk: codexProbe.ok,
       codexVer: codexProbe.version,
-      conn: channel.getConnectionStatus?.()?.state ?? 'unknown',
+      conn: channel.getConnectionStatus?.()?.state ?? 'unconfirmed',
       // 复用上面 validateAppCredentials 的返回（bot/v3/info），不额外发请求；
       // scopeCheck 没换成 token → undefined，卡片降级显示「未能获取」。
       botOpenId: scopeCheck?.botOpenId,
@@ -3210,7 +3210,7 @@ export function createOrchestrator(
     })
     .on(DM.reconnect, async ({ evt }) => {
       if (!dmAdmin(evt.operator?.openId)) return;
-      const conn = channel.getConnectionStatus?.()?.state ?? 'unknown';
+      const conn = channel.getConnectionStatus?.()?.state ?? 'unconfirmed';
       await sendManagedCard(channel, evt.chatId, buildReconnectCard(conn), evt.messageId).catch((err) =>
         log.fail('console', err, { cmd: 'reconnect' }),
       );
@@ -3219,7 +3219,7 @@ export function createOrchestrator(
     // 顺带展示长连接状态。取代了旧「重连」——真断线时重启才是唯一有效手段。
     .on(DM.restart, async ({ evt }) => {
       if (!dmAdmin(evt.operator?.openId)) return;
-      const conn = channel.getConnectionStatus?.()?.state ?? 'unknown';
+      const conn = channel.getConnectionStatus?.()?.state ?? 'unconfirmed';
       await sendManagedCard(channel, evt.chatId, buildRestartConfirmCard(conn), evt.messageId).catch((err) =>
         log.fail('console', err, { cmd: 'restart' }),
       );
@@ -5427,7 +5427,7 @@ export function createOrchestrator(
       // 且 slice 不会在 undefined 上抛 TypeError。
       const operatorId = evt.operator?.openId ?? '';
       if (!isAdmin(cfg, operatorId))
-        return log.info('comment', 'skip', { reason: 'not-admin', sender: operatorId.slice(-6) || '(unknown)' });
+        return log.info('comment', 'skip', { reason: 'not-admin', sender: operatorId.slice(-6) || '(未识别)' });
 
       const resolved = await resolveComment(channel, evt);
       if (!resolved) return log.info('comment', 'skip', { reason: 'no-target-or-empty' });
@@ -5813,10 +5813,10 @@ export function createOrchestrator(
           await sendDm(buildDoctorCard(await buildDoctorInfo()));
           break;
         case DM.reconnect:
-          await sendDm(buildReconnectCard(channel.getConnectionStatus?.()?.state ?? 'unknown'));
+          await sendDm(buildReconnectCard(channel.getConnectionStatus?.()?.state ?? 'unconfirmed'));
           break;
         case DM.restart:
-          await sendDm(buildRestartConfirmCard(channel.getConnectionStatus?.()?.state ?? 'unknown'));
+          await sendDm(buildRestartConfirmCard(channel.getConnectionStatus?.()?.state ?? 'unconfirmed'));
           break;
         case DM.usage: {
           // 同 runUsage 语义，但锚在自己刚发的 loading 卡上：取数后原地更新；取数失败按

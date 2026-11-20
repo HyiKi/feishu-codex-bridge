@@ -104,7 +104,7 @@ export function createTurnMapper(ctx: ClaudeMapContext = {}): TurnMapper {
             .trim();
           return [{
             type: 'error',
-            message: message || `模型服务请求失败（${String(m.error ?? 'unknown')}）`,
+            message: message || `模型服务请求失败（${String(m.error ?? '未提供错误详情')}）`,
             willRetry: false,
           }];
         }

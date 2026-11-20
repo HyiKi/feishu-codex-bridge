@@ -57,7 +57,7 @@ export async function runDaemonControl(action: string): Promise<void> {
       await doStop();
       return;
     }
-    log.warn('daemon-control', 'unknown-action', { action });
+    log.warn('daemon-control', 'unsupported-action', { action });
   } catch (err) {
     log.fail('daemon-control', err, { phase: action });
   }
