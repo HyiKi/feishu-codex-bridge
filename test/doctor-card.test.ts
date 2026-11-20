@@ -106,9 +106,10 @@ describe('buildDoctorCard', () => {
     expect((card as { header: { template: string } }).header.template).toBe('blue');
   });
 
-  it('shows an unknown connection state verbatim', () => {
-    const json = JSON.stringify(buildDoctorCard(info({ conn: 'unknown' })));
-    expect(json).toContain('飞书长连接：unknown');
+  it('renders an unconfirmed connection state in Chinese', () => {
+    const json = JSON.stringify(buildDoctorCard(info({ conn: 'unconfirmed' })));
+    expect(json).toContain('飞书长连接：状态未确认');
+    expect(json).not.toMatch(/\bunknown\b/i);
   });
 
   it('links to the repo and issues via buttons', () => {

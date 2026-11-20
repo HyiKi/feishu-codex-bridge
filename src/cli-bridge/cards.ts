@@ -217,7 +217,7 @@ export function buildCliBridgeAwayNoticeCard(input: { source: CliBridgeAgent; cw
       titleEl(c.title),
       metaLine(input.source, input.cwd),
       note(c.body),
-      md(`📂 **当前项目**\n${input.cwd || 'unknown'}`),
+      md(`📂 **当前项目**\n${input.cwd || '工作目录未提供'}`),
       note(pickCopy(COPY.footerAway, k)),
     ],
     { forward: false },

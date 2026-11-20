@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { ToolLoopGuard } from '../src/bot/tool-loop-guard';
+import { TOOL_LOOP_NUDGE_TEXT, ToolLoopGuard } from '../src/bot/tool-loop-guard';
 
 const tool = (itemId: string) =>
   ({ type: 'tool_use', itemId, title: `tool-${itemId}`, kind: 'tool' }) as const;
 
 describe('ToolLoopGuard', () => {
+  it('uses a concrete Chinese uncertainty instruction', () => {
+    expect(TOOL_LOOP_NUDGE_TEXT).not.toMatch(/\bunknown\b/i);
+    expect(TOOL_LOOP_NUDGE_TEXT).toContain('具体“未核实”项和缺失证据');
+  });
+
   it('nudges once after the threshold when no visible text exists', () => {
     const guard = new ToolLoopGuard({ threshold: 3 });
     expect(guard.observe(tool('1'))).toBe(false);

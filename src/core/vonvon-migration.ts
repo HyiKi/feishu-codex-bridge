@@ -38,7 +38,7 @@ export function checkVonvonMigration(
     lstatSync(file);
     return { kind: 'migrated', marker: file };
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code ?? 'UNKNOWN';
+    const code = (err as NodeJS.ErrnoException).code ?? '未提供错误码';
     // 数据目录或标记不存在（ENOTDIR：数据目录路径上有个普通文件）→ 没迁移。
     if (code === 'ENOENT' || code === 'ENOTDIR') return { kind: 'clear' };
     // EACCES、EIO 等：标记在不在说不准，照样拦，但提示换成「读不了目录」。

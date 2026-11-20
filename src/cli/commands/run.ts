@@ -237,7 +237,7 @@ async function runSingle(botName?: string): Promise<void> {
     const respond = createAdminIpcResponder(
       async (op) => {
         if (op.kind === 'status') {
-          return { connection: handle.channel.getConnectionStatus?.()?.state ?? 'unknown' };
+          return { connection: handle.channel.getConnectionStatus?.()?.state ?? 'unconfirmed' };
         }
         await handle.adminExecute(op);
         return { done: true };
@@ -267,7 +267,7 @@ async function runSingle(botName?: string): Promise<void> {
                 running: true,
                 pid: process.pid,
                 startedAt,
-                connection: handle.channel.getConnectionStatus?.()?.state ?? 'unknown',
+                connection: handle.channel.getConnectionStatus?.()?.state ?? 'unconfirmed',
               }
             : undefined,
         daemonStartedAt: startedAt,

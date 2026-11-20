@@ -30,7 +30,7 @@ export async function runDoctor(): Promise<void> {
   // codex CLI — 经默认后端的 doctor() 探测（M-8：不再深 import codex 探测）
   const probe = await createBackend().doctor();
   if (probe.ok) {
-    checks.push({ name: 'codex CLI', ok: true, detail: `${probe.version ?? 'unknown'} (${probe.location ?? '?'})` });
+    checks.push({ name: 'codex CLI', ok: true, detail: `${probe.version ?? '版本未提供'} (${probe.location ?? '?'})` });
   } else {
     checks.push({
       name: 'codex CLI',

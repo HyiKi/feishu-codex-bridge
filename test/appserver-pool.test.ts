@@ -212,7 +212,7 @@ it('bounds a missing RPC response without killing unrelated requests', async () 
   try {
     await client.connect();
     const hanging = client.request('hang', {}, 30);
-    const timedOut = expect(hanging).rejects.toThrow('delivery unknown');
+    const timedOut = expect(hanging).rejects.toThrow('delivery state not confirmed');
     await expect(client.request('model/list', {})).resolves.toHaveProperty('data');
     await timedOut;
     expect((client as any).pending.size).toBe(0);

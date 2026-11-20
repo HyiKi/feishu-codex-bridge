@@ -48,7 +48,7 @@ interface Child {
 }
 
 /** 实时状态查询（{kind:'status'}）的短超时：/api/state 是 5s 轮询，不能被一个
- * 假死子进程拖住整页——超时按 connection:'unknown' 渲染。 */
+ * 假死子进程拖住整页——超时按 connection:'unconfirmed' 渲染。 */
 const STATUS_IPC_TIMEOUT_MS = 2_000;
 
 export async function runSupervisor(bots: BotEntry[]): Promise<void> {
@@ -164,7 +164,7 @@ export async function runSupervisor(bots: BotEntry[]): Promise<void> {
           running: true,
           pid: c.proc.pid,
           startedAt: c.startedAt,
-          connection: r?.connection ?? 'unknown',
+          connection: r?.connection ?? 'unconfirmed',
         };
       },
       daemonStartedAt: supervisorStartedAt,

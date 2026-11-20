@@ -973,6 +973,7 @@ ${UI_PURE_JS}
     if (s === 'connecting') return '⏳ 连接中';
     if (s === 'reconnecting') return '↻ 重连中';
     if (s === 'disconnected') return '❌ 已断开';
+    if (s === 'unconfirmed' || s === 'unknown') return '状态未确认';
     return s;
   }
   function familyName(f) { return f === 'codex' ? 'Codex' : f === 'claude' ? 'Claude' : f; }

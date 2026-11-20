@@ -446,7 +446,7 @@ export class SessionTitleCoordinator {
         claimId,
         'failed',
         undefined,
-        job.lastError ?? 'native title write outcome is unknown; not retried',
+        job.lastError ?? 'native title write outcome not confirmed; not retried',
       );
       return;
     }
